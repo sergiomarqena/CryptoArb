@@ -1,25 +1,41 @@
-# MR MOST PROFITABLE — QUANT TERMINAL
+# MR MOST PROFITABLE — Market Intelligence
 
-A desktop-first hybrid crypto market-intelligence dashboard combining cross-exchange arbitrage research and futures analysis.
+A read-only multi-market monitoring platform. No exchange credentials, order placement, or automated trading.
 
-## Phase 1 status
-- React + TypeScript dashboard
-- FastAPI backend foundation
-- $500 virtual wallet display
-- Paper-trading-only interface
-- Live exchange feeds are **not connected yet**
-- All market figures in the preview UI are illustrative, not live prices
+## Architecture
 
-## Run locally
+- **Frontend:** React + TypeScript + Vite
+- **API:** FastAPI + HTTPX
+- **Live crypto source:** Binance public Spot 24h ticker, klines, USD-M Futures premium index and open-interest snapshot endpoints
+- **Macro references:** Yahoo Finance chart data for gold futures (GC=F), WTI crude futures (CL=F), and US Dollar Index (DX-Y.NYB)
+- **Hosting:** Railway API service; GitHub Pages remains the static frontend preview
+- **Caching:** in-process TTL cache to reduce public API calls
 
-### Frontend
-```bash
-cd frontend
-npm install
-npm run dev
-```
+## API endpoints
 
-### Backend
+- `GET /health` — service health
+- `GET /api/v1/status` — connected providers and operating mode
+- `GET /api/v1/crypto/markets` — USDT spot universe with 24h price/volume and available futures funding context
+- `GET /api/v1/crypto/overview` — descriptive top gainers, losers and quote-volume rankings
+- `GET /api/v1/crypto/klines/{symbol}?interval=1m&limit=100` — historical candles
+- `GET /api/v1/crypto/open-interest/{symbol}` — futures open-interest snapshot
+- `GET /api/v1/macro` — gold, WTI and DXY market references
+- `WS /ws` — periodic market overview updates
+
+Interactive API docs: `/docs`.
+
+## Deploy API to Railway
+
+Create a Railway service from this repository and set its **Root Directory** to `/backend`. Railway will build `backend/Dockerfile`, expose the generated `PORT`, and health-check `/health`.
+
+Optional variables:
+- `MARKET_CACHE_TTL=20`
+- `UNIVERSE_LIMIT=100`
+- `REQUEST_TIMEOUT=9`
+- `CORS_ORIGINS=*` (replace with the frontend origin when you have a stable custom domain)
+
+## Local development
+
 ```bash
 cd backend
 python -m venv .venv
@@ -29,15 +45,14 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-Frontend: http://localhost:5173  
-Backend health: http://localhost:8000/health
+## Data integrity
 
-## Safety
-The initial build is paper-only. It does not request exchange credentials or place real orders. Do not interpret preview values or research scores as trading recommendations.
+Every response identifies its provider and update time. Public endpoints can be rate-limited or temporarily unavailable. Yahoo Finance futures references are not guaranteed to match a broker's CFD quote or session. Macro values may be delayed/indicative. Do not treat market rankings, funding, open interest or price movements as trading instructions.
 
 ## Roadmap
-1. Dashboard foundation
-2. Verified public Binance and MEXC market feeds
-3. Cost-aware arbitrage calculations
-4. Explainable futures research signals
-5. Persistent paper ledger and out-of-sample testing
+
+1. Public live market ingestion and API health — foundation
+2. Frontend API integration and market interval/ranking screens
+3. Historical storage and relative-volume baselines
+4. News/event source ingestion with citations and explainable summaries
+5. Portfolio analytics and a TradingView chart workspace
