@@ -1,82 +1,84 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Activity, Bell, ChartNoAxesCombined, CircleDot, Database, Globe2, Radio, Search, Settings2, ShieldCheck, Wallet, RotateCcw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Activity, ArrowDownRight, ArrowUpRight, Clock3, Database, Globe2, RefreshCw, Radio, Search, ShieldCheck, Wifi, WifiOff } from 'lucide-react';
 
-type Market = { symbol: string; price: number; change: number; color: string };
-const seed: Market[] = [
-  { symbol: 'BTC/USDT', price: 67842.10, change: 1.82, color: 'gold' },
-  { symbol: 'ETH/USDT', price: 3524.80, change: 0.94, color: 'violet' },
-  { symbol: 'SOL/USDT', price: 182.64, change: -0.72, color: 'cyan' },
-  { symbol: 'BNB/USDT', price: 598.22, change: 0.41, color: 'gold' },
-  { symbol: 'XRP/USDT', price: 0.6241, change: -1.12, color: 'cyan' },
-  { symbol: 'DOGE/USDT', price: 0.1642, change: 2.31, color: 'gold' },
-  { symbol: 'AVAX/USDT', price: 36.82, change: 0.18, color: 'violet' },
-  { symbol: 'LINK/USDT', price: 17.44, change: -0.33, color: 'cyan' },
-];
-const money = (n: number) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fmtPrice = (n: number) => n < 1 ? n.toFixed(4) : n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-function Spark({ points }: { points: number[] }) {
-  const path = points.map((v, i) => `${i === 0 ? 'M' : 'L'}${(i / Math.max(points.length - 1, 1)) * 600} ${140 - v * 115}`).join(' ');
-  return <svg viewBox="0 0 600 150" preserveAspectRatio="none" className="spark"><defs><linearGradient id="fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#dc43c5" stopOpacity=".32"/><stop offset="100%" stopColor="#dc43c5" stopOpacity="0"/></linearGradient></defs><path d={`${path} L600 150 L0 150Z`} fill="url(#fill)"/><path d={path} fill="none" stroke="#df55ca" strokeWidth="2.5"/></svg>;
+const API = 'https://mr-most-profitable-api-production.up.railway.app';
+type Market = { symbol:string; base_asset:string; last_price:number; price_change_pct_24h:number; high_24h:number; low_24h:number; quote_volume_24h:number; trade_count_24h:number; funding_rate:number|null; mark_price:number|null; data_sources:string[] };
+type MacroItem = { symbol:string; label:string; last:number|null; change_pct_latest_interval:number|null; currency:string|null; exchange_timezone:string|null; last_bar_epoch:number|null; source:string; status:string; error?:string };
+type Overview = { market_count:number; top_gainers:Market[]; top_losers:Market[]; highest_quote_volume:Market[]; updated_at:string };
+type Macro = { instruments:Record<string,MacroItem>; updated_at:string; note:string };
+type Kline = { time:number; open:number; high:number; low:number; close:number; volume:number };
+const n=(v:number|undefined|null,d=2)=>v==null?'—':v.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+const money=(v:number|undefined|null)=>v==null?'—':'$'+n(v,v<1?5:2);
+const pct=(v:number|undefined|null)=>v==null?'—':(v>0?'+':'')+n(v,2)+'%';
+const stamp=(v?:string)=>v?new Date(v).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
+async function get<T,>(path:string):Promise<T>{const r=await fetch(API+path,{cache:'no-store'});if(!r.ok)throw new Error('API '+r.status+' · '+path);return r.json();}
+function Change({value}:{value:number|null|undefined}){return <span className={value==null?'neutral':value>=0?'positive':'negative'}>{value!=null&& (value>=0?<ArrowUpRight size={13}/>:<ArrowDownRight size={13}/>)}{pct(value)}</span>}
+function Sparkline({items}:{items:Kline[]}){if(items.length<2)return <div className="spark-empty">Waiting for candle data…</div>;const vals=items.map(x=>x.close),lo=Math.min(...vals),hi=Math.max(...vals),range=hi-lo||1;const points=vals.map((v,i)=>`${i/(vals.length-1)*100},${38-(v-lo)/range*32}`).join(' ');return <svg className="sparkline" viewBox="0 0 100 42" preserveAspectRatio="none"><polyline points={points} fill="none" stroke="#d66bc5" strokeWidth="1.4" vectorEffect="non-scaling-stroke"/></svg>}
+function App(){
+ const [tab,setTab]=useState('OVERVIEW');
+ const [markets,setMarkets]=useState<Market[]>([]);
+ const [overview,setOverview]=useState<Overview|null>(null);
+ const [macro,setMacro]=useState<Macro|null>(null);
+ const [candles,setCandles]=useState<Kline[]>([]);
+ const [selected,setSelected]=useState('BTCUSDT');
+ const [query,setQuery]=useState('');
+ const [loading,setLoading]=useState(true);
+ const [refreshing,setRefreshing]=useState(false);
+ const [error,setError]=useState('');
+ const [updated,setUpdated]=useState('');
+ const [source,setSource]=useState('—');
+ const [oi,setOi]=useState<number|null>(null);
+ const [oiError,setOiError]=useState('');
+ const [clock,setClock]=useState(new Date());
+ const refresh=useCallback(async()=>{
+   setRefreshing(true);
+   try{
+     const [m,o,x]=await Promise.all([get<{data:Market[];source:string;updated_at:string}>('/api/v1/crypto/markets'),get<Overview>('/api/v1/crypto/overview'),get<Macro>('/api/v1/macro')]);
+     setMarkets(m.data);setOverview(o);setMacro(x);setUpdated(m.updated_at);setSource(m.source);setError('');
+   }catch(e){setError(e instanceof Error?e.message:'Unable to reach market API');}
+   finally{setLoading(false);setRefreshing(false);}
+ },[]);
+ const loadDetail=useCallback(async(symbol:string)=>{
+   try{const c=await get<{candles:Kline[]}>('/api/v1/crypto/klines/'+symbol+'?interval=5m&limit=72');setCandles(c.candles);}
+   catch{setCandles([]);}
+   try{const v=await get<{open_interest_contracts:number}>('/api/v1/crypto/open-interest/'+symbol);setOi(v.open_interest_contracts);setOiError('');}
+   catch{setOi(null);setOiError('Open interest unavailable');}
+ },[]);
+ useEffect(()=>{refresh();const t=setInterval(refresh,30000);const c=setInterval(()=>setClock(new Date()),1000);return()=>{clearInterval(t);clearInterval(c)}},[refresh]);
+ useEffect(()=>{loadDetail(selected)},[selected,loadDetail]);
+ const filtered=useMemo(()=>markets.filter(m=>m.symbol.toLowerCase().includes(query.toLowerCase())),[markets,query]);
+ const chosen=markets.find(m=>m.symbol===selected);
+ const topVolume=overview?.highest_quote_volume?.slice(0,8)??[];
+ return <div className="app-shell">
+  <header className="topbar"><a className="brand" href="#"><span className="brand-icon">M</span><span><b>MR MOST PROFITABLE</b><small>MARKET INTELLIGENCE TERMINAL</small></span></a><nav>{['OVERVIEW','CRYPTO','MACRO','DATA'].map(x=><button key={x} className={tab===x?'active':''} onClick={()=>setTab(x)}>{x}</button>)}</nav><div className="top-meta"><span className={error?'connection down':'connection'}><i/>{error?'DEGRADED':'API CONNECTED'}</span><span className="clock">{clock.toLocaleTimeString('en-GB')}</span><button className="refresh" onClick={refresh} disabled={refreshing}><RefreshCw size={15} className={refreshing?'spin':''}/></button></div></header>
+  <div className="ticker"><span>LIVE PUBLIC DATA</span>{markets.slice(0,7).map(m=><span key={m.symbol}>{m.base_asset} <b>{money(m.last_price)}</b> <Change value={m.price_change_pct_24h}/></span>)}<span className="ticker-end">30s REFRESH</span></div>
+  <main className="content">
+   <section className="page-heading"><div><div className="eyebrow">COMMAND CENTER / {tab}</div><h1>Market <em>intelligence</em></h1><p>Read-only market monitoring · factual data, no trade signals or order execution</p></div><div className="updated"><span className="live-dot"/> PUBLIC FEEDS <b>{stamp(updated)}</b></div></section>
+   {error&&<div className="alert"><WifiOff size={16}/><span>Live API issue: {error}. Showing last successfully loaded data, if available.</span></div>}
+   {loading&&!markets.length?<div className="loading"><RefreshCw className="spin"/> Connecting to live market feeds…</div>:<>
+    {(tab==='OVERVIEW'||tab==='CRYPTO')&&<>
+     <section className="metric-grid">
+      <article className="metric"><label><Activity size={14}/> TRACKED SPOT MARKETS</label><strong>{overview?.market_count??markets.length}</strong><small>USDT pairs · Binance Spot</small></article>
+      <article className="metric"><label><ArrowUpRight size={14}/> TOP 24H GAINER</label><strong className="positive">{overview?.top_gainers?.[0]?.base_asset??'—'}</strong><small>{pct(overview?.top_gainers?.[0]?.price_change_pct_24h)} · descriptive only</small></article>
+      <article className="metric"><label><ArrowDownRight size={14}/> TOP 24H DECLINER</label><strong className="negative">{overview?.top_losers?.[0]?.base_asset??'—'}</strong><small>{pct(overview?.top_losers?.[0]?.price_change_pct_24h)} · descriptive only</small></article>
+      <article className="metric"><label><Database size={14}/> DATA PROVIDER</label><strong className="provider">BINANCE</strong><small>Spot + USD-M Futures context</small></article>
+     </section>
+     <section className="two-col">
+      <article className="panel focus-panel"><div className="panel-head"><div><div className="eyebrow">ASSET MONITOR</div><h2>{chosen?.base_asset??selected.replace('USDT','')} <span>/ USDT</span></h2></div><select value={selected} onChange={e=>setSelected(e.target.value)}>{markets.slice(0,100).map(m=><option key={m.symbol} value={m.symbol}>{m.symbol}</option>)}</select></div><div className="focus-price">{money(chosen?.last_price)} <Change value={chosen?.price_change_pct_24h}/></div><div className="chart-area"><Sparkline items={candles}/></div><div className="detail-grid"><div><small>24H HIGH</small><b>{money(chosen?.high_24h)}</b></div><div><small>24H LOW</small><b>{money(chosen?.low_24h)}</b></div><div><small>24H QUOTE VOLUME</small><b>{chosen?money(chosen.quote_volume_24h):'—'}</b></div><div><small>TRADES (24H)</small><b>{chosen?.trade_count_24h?.toLocaleString()??'—'}</b></div></div><div className="oi-row"><span>Futures open-interest snapshot</span><b>{oi==null?(oiError||'Loading…'):n(oi,3)+' contracts'}</b></div><small className="disclaimer">Spot candles and futures open interest are separate datasets; OI is not a directional signal.</small></article>
+      <article className="panel"><div className="panel-head"><div><div className="eyebrow">MARKET LEADERSHIP</div><h2>Highest traded value</h2></div><span className="tag">24H</span></div><div className="leader-list">{topVolume.map((m,i)=><button key={m.symbol} className="leader-row" onClick={()=>setSelected(m.symbol)}><span className="rank">{String(i+1).padStart(2,'0')}</span><b>{m.base_asset}</b><span>{money(m.quote_volume_24h)}</span><Change value={m.price_change_pct_24h}/></button>)}</div></article>
+     </section>
+     <section className="two-col lists">
+      <article className="panel"><div className="panel-head"><div><div className="eyebrow">PRICE PERFORMANCE</div><h2>Top 24h gainers</h2></div><span className="tag">SPOT</span></div><MarketTable rows={overview?.top_gainers??[]}/></article>
+      <article className="panel"><div className="panel-head"><div><div className="eyebrow">PRICE PERFORMANCE</div><h2>Top 24h decliners</h2></div><span className="tag">SPOT</span></div><MarketTable rows={overview?.top_losers??[]}/></article>
+     </section>
+     <article className="panel market-panel"><div className="panel-head"><div><div className="eyebrow">MARKET UNIVERSE</div><h2>USDT spot pairs</h2></div><label className="search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search symbol…"/></label></div><div className="table-wrap"><table><thead><tr><th>ASSET</th><th>LAST PRICE</th><th>24H CHANGE</th><th>24H HIGH</th><th>24H LOW</th><th>QUOTE VOLUME</th><th>TRADES</th></tr></thead><tbody>{filtered.slice(0,30).map(m=><tr key={m.symbol} onClick={()=>setSelected(m.symbol)}><td><b>{m.base_asset}</b><small>{m.symbol}</small></td><td>{money(m.last_price)}</td><td><Change value={m.price_change_pct_24h}/></td><td>{money(m.high_24h)}</td><td>{money(m.low_24h)}</td><td>{money(m.quote_volume_24h)}</td><td>{m.trade_count_24h.toLocaleString()}</td></tr>)}</tbody></table></div><div className="table-foot">Showing {Math.min(filtered.length,30)} of {filtered.length} matching pairs · Select a row to inspect the asset above.</div></article>
+    </>}
+    {(tab==='OVERVIEW'||tab==='MACRO')&&<section className="panel macro-panel"><div className="panel-head"><div><div className="eyebrow">CROSS-ASSET REFERENCE</div><h2>Macro watch</h2></div><span className="tag">VENDOR DATA</span></div><div className="macro-grid">{['XAUUSD','USOIL','DXY'].map(k=>{const x=macro?.instruments?.[k];return <div className="macro-card" key={k}><div><span>{k}</span><i className={x?.status==='ok'?'ok-dot':'bad-dot'}/></div><strong>{x?.last==null?'Unavailable':n(x.last,x.last<10?3:2)}</strong><small>{x?.label??'Loading reference…'}</small><em>{x?.status==='ok'?'Latest 5m interval: '+pct(x.change_pct_latest_interval):x?.status??'Loading'}</em><footer>{x?.source??'Yahoo Finance chart'}</footer></div>})}</div><p className="macro-note">{macro?.note??'Gold and WTI are futures references; they may differ from broker spot/CFD quotes. DXY is an index reference.'}</p></section>}
+    {tab==='DATA'&&<section className="panel data-panel"><div className="eyebrow">SYSTEM TRANSPARENCY</div><h2>Feed status & limitations</h2><div className="data-line"><span><Wifi size={15}/> API health</span><b>{error?'DEGRADED':'CONNECTED'}</b></div><div className="data-line"><span><Database size={15}/> Crypto spot</span><b>Binance public 24h ticker</b></div><div className="data-line"><span><Activity size={15}/> Futures context</span><b>Binance USD-M funding / open interest</b></div><div className="data-line"><span><Globe2 size={15}/> Macro references</span><b>Yahoo Finance chart · GC=F / CL=F / DX-Y.NYB</b></div><div className="data-line"><span><Clock3 size={15}/> Last API update</span><b>{updated?new Date(updated).toLocaleString():'—'}</b></div><p className="macro-note">This is a read-only monitoring terminal. Public provider data can be delayed, rate-limited or unavailable. Gold/WTI futures are reference instruments, not a universal spot/CFD order book. No AI-generated buy/sell calls, orders or account connections.</p></section>}
+   </>}
+   <footer className="app-footer"><span><ShieldCheck size={14}/> READ-ONLY MARKET INTELLIGENCE</span><span><Radio size={14}/> {source}</span><span>Auto refresh: 30 seconds</span></footer>
+  </main>
+ </div>
 }
-function App() {
-  const [time, setTime] = useState(new Date());
-  const [tab, setTab] = useState('OVERVIEW');
-  const [markets, setMarkets] = useState(seed);
-  const [history, setHistory] = useState<number[]>(Array.from({ length: 28 }, (_, i) => .38 + i * .008 + Math.sin(i * .8) * .035));
-  const [wallet, setWallet] = useState(500);
-  const [buy, setBuy] = useState('100');
-  const [sell, setSell] = useState('102');
-  const [fee, setFee] = useState('0.1');
-  const [logs, setLogs] = useState([
-    ['21:24:08', 'SYSTEM', 'Dashboard initialized', 'ok'],
-    ['21:24:07', 'PAPER', 'Virtual wallet loaded: $500.00', 'ok'],
-    ['21:24:06', 'DEMO', 'Synthetic price stream started', 'warn'],
-    ['21:24:05', 'LAB', 'Fee calculator ready', 'ok'],
-  ]);
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTime(new Date());
-      setMarkets(old => old.map(m => {
-        const drift = (Math.random() - .49) * .0018;
-        return { ...m, price: Math.max(m.price * (1 + drift), .0001), change: Math.max(-9.99, Math.min(9.99, m.change + drift * 100)) };
-      }));
-      setHistory(old => [...old.slice(-39), Math.max(.08, Math.min(.94, old[old.length - 1] + (Math.random() - .49) * .09))]);
-    }, 2200);
-    return () => clearInterval(timer);
-  }, []);
-  const calculation = useMemo(() => {
-    const b = Number(buy), s = Number(sell), f = Number(fee);
-    if (!(b > 0) || !(s > 0) || !(f >= 0) || !Number.isFinite(b + s + f)) return null;
-    const gross = s - b;
-    const fees = (b + s) * f / 100;
-    return { gross, fees, net: gross - fees, pct: ((gross - fees) / b) * 100 };
-  }, [buy, sell, fee]);
-  const reset = () => {
-    setWallet(500); setBuy('100'); setSell('102'); setFee('0.1');
-    setLogs(old => [['21:24:09', 'PAPER', 'Demo wallet and calculator reset', 'ok'], ...old].slice(0, 8));
-  };
-  return <div className="shell">
-    <header className="top"><div className="brand"><div className="brandmark">M</div><div><b>MR MOST PROFITABLE</b><small>QUANT TERMINAL <span>V1.1 SIMULATOR</span></small></div></div><nav>{['OVERVIEW','SPREAD LAB','ANALYTICS'].map(x=><button className={tab===x?'active':''} onClick={()=>setTab(x)} key={x}>{x}</button>)}</nav><div className="topright"><span className="status"><i/> SIMULATION</span><span className="clock">{time.toLocaleTimeString('en-GB')}</span><Bell size={16}/><Settings2 size={17}/></div></header>
-    <div className="ticker"><span>DATA MODE <b className="amber">SYNTHETIC DEMO</b></span>{markets.slice(0,3).map(m=><span key={m.symbol}>{m.symbol} <b>${fmtPrice(m.price)}</b> <em className={m.change<0?'negative':'positive'}>{m.change>0?'+':''}{m.change.toFixed(2)}%</em></span>)}<span>EXCHANGE APIS <b className="amber">DISABLED</b></span></div>
-    <main>
-      <div className="heading"><div><div className="eyebrow">COMMAND CENTER / {tab}</div><h1>Market intelligence <span>terminal</span></h1><p>Interactive learning simulator · all prices and calculations are illustrative</p></div><div className="headright"><span className="pill"><CircleDot size={10}/> NO LIVE MARKET CONNECTION</span><button className="iconbtn" onClick={reset} title="Reset simulator"><RotateCcw size={16}/></button></div></div>
-      <section className="stats">
-        <div className="stat highlight"><div className="statlabel"><Wallet/> VIRTUAL WALLET</div><div className="big">{money(wallet)}</div><div className="sub">DEMO BALANCE · NOT REAL FUNDS</div><div className="linebar"><i/></div></div>
-        <div className="stat"><div className="statlabel">SIMULATED P&L <span className="muted">01</span></div><div className="big">$0.00</div><div className="sub">NO POSITIONS OR ORDERS</div></div>
-        <div className="stat"><div className="statlabel">OPEN POSITIONS <span className="muted">02</span></div><div className="big">00</div><div className="sub">ORDER ENTRY DISABLED</div></div>
-        <div className="stat"><div className="statlabel">DEMO ASSETS <span className="muted">03</span></div><div className="big">08</div><div className="sub">SYNTHETIC PRICE STREAM</div></div>
-      </section>
-      <section className="gridmain">
-        <div className="panel chartpanel"><div className="panelhead"><div><div className="eyebrow">SYNTHETIC MARKET / BTC-USDT</div><h2>Bitcoin <span className="muted">· illustrative reference</span></h2></div><span className="pill amberpill">DEMO STREAM</span></div><div className="price">${fmtPrice(markets[0].price)} <em>{markets[0].change>0?'+':''}{markets[0].change.toFixed(2)}%</em></div><div className="chart"><div className="chartgrid"><span>+4%</span><span>+3%</span><span>+2%</span><span>+1%</span><span>0%</span></div><Spark points={history}/><div className="chartnote">Generated sample path · not exchange candles</div></div><div className="timeframes">{['1M','5M','15M','1H','4H','1D'].map((x,i)=><button className={i===2?'selected':''} key={x}>{x}</button>)}</div></div>
-        <div className="panel opportunity"><div className="panelhead"><div><div className="eyebrow">LEARNING MODULE</div><h2>Fee & spread calculator</h2></div><Activity size={18}/></div><div className="calc"><label>Hypothetical entry price ($)<input type="number" min="0" value={buy} onChange={e=>setBuy(e.target.value)}/></label><label>Hypothetical exit price ($)<input type="number" min="0" value={sell} onChange={e=>setSell(e.target.value)}/></label><label>Example fee rate (%)<input type="number" min="0" step="0.01" value={fee} onChange={e=>setFee(e.target.value)}/></label>{calculation ? <div className="calcresults"><div><span>Gross difference</span><b>{money(calculation.gross)}</b></div><div><span>Illustrative fees</span><b>{money(calculation.fees)}</b></div><div className="net"><span>After example fees</span><b className={calculation.net>=0?'positive':'negative'}>{money(calculation.net)} ({calculation.pct.toFixed(2)}%)</b></div></div> : <p className="calcerror">Enter valid positive prices and a non-negative fee.</p>}<small>Educational arithmetic only. Excludes slippage, taxes and other costs; not a trade signal.</small></div></div>
-      </section>
-      <section className="lower">
-        <div className="panel"><div className="panelhead"><div><div className="eyebrow">SYNTHETIC ASSET UNIVERSE</div><h2>Demo market list <span className="muted">· generated locally</span></h2></div><span className="count">08 ASSETS</span></div><div className="marketlist">{markets.map(m=><div className="marketrow" key={m.symbol}><span className="coin">{m.symbol[0]}</span><b>{m.symbol}</b><span className="mprice">${fmtPrice(m.price)}</span><span className={m.change>=0?'positive':'negative'}>{m.change>0?'+':''}{m.change.toFixed(2)}%</span><span className="signal watch">DEMO</span><div className="score"><i style={{width:Math.min(100,Math.abs(m.change)*10+35)+'%'}}/></div></div>)}</div></div>
-        <div className="panel map"><div className="panelhead"><div><div className="eyebrow">MARKET TOPOLOGY</div><h2>Signal constellation</h2></div><Globe2 size={18}/></div><div className="constellation animated-network"><svg className="network-wires" viewBox="0 0 600 260" preserveAspectRatio="none" aria-hidden="true"><g className="wire-base"><path d="M55 62 L155 35 L250 80 L345 42 L470 75 L550 35 M55 62 L110 165 L250 80 L300 205 L470 75 L510 175 M110 165 L205 225 L300 205 L390 150 L510 175 L550 35 M155 35 L205 225 M250 80 L390 150 M345 42 L390 150 M470 75 L550 35 M55 62 L205 225"/></g><g className="wire-flow"><path d="M55 62 L155 35 L250 80 L345 42 L470 75 L550 35 M55 62 L110 165 L250 80 L300 205 L470 75 L510 175 M110 165 L205 225 L300 205 L390 150 L510 175 L550 35 M155 35 L205 225 M250 80 L390 150 M345 42 L390 150 M470 75 L550 35 M55 62 L205 225"/></g></svg>{markets.concat([{...markets[0],symbol:'ADA/USDT'},{...markets[1],symbol:'DOT/USDT'},{...markets[2],symbol:'MATIC/USDT'}]).map((m,i)=>{const coords=[[9,24],[26,14],[42,31],[58,16],[78,29],[92,14],[18,64],[34,87],[50,79],[65,58],[85,67]];const p=coords[i];return <div key={m.symbol} className={'coin-node '+['gold','violet','cyan'][i%3]} style={{left:p[0]+'%',top:p[1]+'%',animationDelay:(i*.23)+'s'}}><i/><b>{m.symbol.split('/')[0]}</b></div>})}<div className="core"><Activity size={25}/><b>08</b><small>DEMO ASSETS</small></div><div className="network-scan"/></div><div className="maplegend"><span><i className="green"/> POSITIVE</span><span><i className="red"/> NEGATIVE</span><span><i className="pink"/> SIMULATED</span></div></div>
-      </section>
-      <section className="bottom"><div className="panel equity"><div className="panelhead"><div><div className="eyebrow">PAPER ACCOUNT</div><h2>Wallet history</h2></div><span className="count">START $500</span></div><div className="equityempty"><ChartNoAxesCombined size={24}/><b>No simulated transactions</b><small>Order placement is intentionally disabled.</small></div></div><div className="panel"><div className="panelhead"><div><div className="eyebrow">SYSTEM ACTIVITY</div><h2>Execution log</h2></div><span className="live"><i/> LOCAL</span></div><div className="logs">{logs.map((l,i)=><div className="logrow" key={i}><time>{l[0]}</time><b>{l[1]}</b><span>{l[2]}</span><i className={l[3]}/></div>)}</div></div></section>
-      <footer><span><ShieldCheck size={13}/> EDUCATIONAL SIMULATOR · NO LIVE ORDERS</span><span><Database size={13}/> LOCAL GENERATED DATA · NO API KEYS</span><span>MRMP QUANT TERMINAL © 2026</span></footer>
-    </main>
-  </div>;
-}
+function MarketTable({rows}:{rows:Market[]}){return <div className="compact-table">{rows.slice(0,8).map(m=><div className="compact-row" key={m.symbol}><b>{m.base_asset}</b><span>{money(m.last_price)}</span><Change value={m.price_change_pct_24h}/></div>)}</div>}
 export default App;
