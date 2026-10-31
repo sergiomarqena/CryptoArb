@@ -30,9 +30,9 @@ function StatusDot({ok}:{ok:boolean}){return <i className={ok?'dot-live':'dot-wa
 function ChartPanel({symbol,timeframe}:{symbol:string;timeframe:string}){
   const host=useRef<HTMLDivElement>(null); const chart=useRef<IChartApi|null>(null);
   const [candles,setCandles]=useState<Candle[]>([]); const [status,setStatus]=useState('Loading candles…');
-  useEffect(()=>{let alive=true;get<{candles:Candle[];source:string}>(`/api/v1/crypto/klines/${symbol}?interval=${timeframe}&market=spot&limit=240`)
+  useEffect(()=>{let alive=true;const load=()=>get<{candles:Candle[];source:string}>(`/api/v1/crypto/klines/${symbol}?interval=${timeframe}&market=spot&limit=240`)
     .then(x=>{if(alive){setCandles(x.candles||[]);setStatus(x.source||'MEXC Spot candles')}})
-    .catch(()=>{if(alive){setCandles([]);setStatus('Candle feed unavailable')}});return()=>{alive=false}},[symbol,timeframe]);
+    .catch(()=>{if(alive){setCandles([]);setStatus('Candle feed unavailable')}});load();const timer=setInterval(load,10000);return()=>{alive=false;clearInterval(timer)}},[symbol,timeframe]);
   useEffect(()=>{
     if(!host.current||!candles.length)return;
     const el=host.current;
@@ -56,7 +56,7 @@ function ChartPanel({symbol,timeframe}:{symbol:string;timeframe:string}){
 function CoinModal({symbol,onClose}:{symbol:string;onClose:()=>void}){
   const [timeframe,setTimeframe]=useState('5M'); const [detail,setDetail]=useState<Detail|null>(null); const [loading,setLoading]=useState(true); const [error,setError]=useState('');
   const load=useCallback(async()=>{setLoading(true);setError('');try{const d=await get<Detail>(`/api/v1/crypto/detail/${symbol}?timeframe=${timeframe}`);setDetail(d)}catch(e){setError(e instanceof Error?e.message:'Detail unavailable')}finally{setLoading(false)}},[symbol,timeframe]);
-  useEffect(()=>{load()},[load]);
+  useEffect(()=>{load();const timer=setInterval(load,10000);return()=>clearInterval(timer)},[load]);
   const book=detail?.spot_orderbook; const trades=detail?.trade_intelligence;
   return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}>
     <section className="coin-modal">
@@ -68,6 +68,7 @@ function CoinModal({symbol,onClose}:{symbol:string;onClose:()=>void}){
         <div className="panel intel-panel"><div className="panel-title"><span>WHALE INTELLIGENCE</span><Waves size={16}/></div>
           <div className="whale-state"><span>WHALE BUYING</span><b className={detail?.whale_buying==='DETECTED'?'up':'muted'}>{detail?.whale_buying||'INSUFFICIENT DATA'}</b></div>
           <div className="whale-state"><span>WHALE SELLING</span><b className={detail?.whale_selling==='DETECTED'?'down':'muted'}>{detail?.whale_selling||'INSUFFICIENT DATA'}</b></div>
+          <div className="whale-activity-note">{detail?.whale_buying==='DETECTED'?'LARGE TRADE BUYING PRESSURE DETECTED — NO WALLET IDENTITY INFERRED':'NO CONFIRMED WHALE BUYING ACTIVITY'}</div>
           <div className="zone-note">{detail?.whale_zone_status||'NO WHALE BUYING ZONE IDENTIFIED'}</div>
           <p className="tiny muted">{trades?.caveat||'Large trade classification is a sample-relative heuristic, not wallet attribution.'}</p>
         </div></div>
