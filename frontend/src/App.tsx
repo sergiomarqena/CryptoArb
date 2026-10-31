@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createChart, CandlestickSeries, type IChartApi, type UTCTimestamp } from 'lightweight-charts';
 import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, ChevronDown, CircleHelp, Database, Filter, Globe2, Layers3, RefreshCw, Search, ShieldAlert, Signal, Waves, X } from 'lucide-react';
 
-const API = (import.meta as any).env?.VITE_API_URL || 'https://mr-most-profitable-api-production.up.railway.app';
+const API = (import.meta as any).env?.VITE_API_URL || 'https://nordvex-api-preview-production.up.railway.app';
 type Market = {
   symbol:string; base_asset:string; price:number|null; change_24h_pct:number|null;
   price_change_pct:number|null; volume_change_pct:number|null; relative_volume:number|null;
