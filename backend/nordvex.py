@@ -166,46 +166,94 @@ class MexcMarketData:
 
     async def spot_universe(self) -> tuple[list[dict], bool]:
         async def load():
-            info, tickers = await asyncio.gather(
+            info, ticker_payload = await asyncio.gather(
                 self.request(f"{SPOT}/api/v3/exchangeInfo"),
                 self.request(f"{SPOT}/api/v3/ticker/24hr"),
             )
+            # MEXC has used more than one status representation across API docs
+            # and deployments. Normalize response containers and avoid treating
+            # a valid ticker universe as empty solely due to status enum drift.
             symbols = info.get("symbols", []) if isinstance(info, dict) else []
-            ticker_map = {x.get("symbol"): x for x in tickers if isinstance(x, dict)}
+            if isinstance(symbols, dict):
+                symbols = [symbols]
+            if isinstance(ticker_payload, dict):
+                tickers = ticker_payload.get("data", [])
+                if not tickers and ticker_payload.get("symbol"):
+                    tickers = [ticker_payload]
+            else:
+                tickers = ticker_payload if isinstance(ticker_payload, list) else []
+            ticker_rows = [x for x in tickers if isinstance(x, dict) and x.get("symbol")]
+            ticker_map = {x.get("symbol"): x for x in ticker_rows}
+            symbol_rows = [x for x in symbols if isinstance(x, dict) and x.get("symbol")]
             eligible = []
-            for item in symbols:
-                symbol = item.get("symbol", "")
-                if item.get("quoteAsset") != "USDT" or item.get("status") != "ENABLED":
-                    continue
-                if item.get("isSpotTradingAllowed") is False:
-                    continue
-                ticker = ticker_map.get(symbol)
-                if not ticker:
-                    continue
+
+            def make_row(symbol: str, ticker: dict, item: dict | None = None):
                 last = number(ticker.get("lastPrice"))
                 volume = number(ticker.get("volume"))
                 quote_volume = number(ticker.get("quoteVolume"))
-                quote_volume_estimate = last * volume if quote_volume is None and last is not None and volume is not None else None
+                quote_volume_estimate = (
+                    last * volume
+                    if quote_volume is None and last is not None and volume is not None
+                    else None
+                )
                 liquidity_sort_value = quote_volume if quote_volume is not None else quote_volume_estimate
-                eligible.append({
+                base_asset = (item or {}).get("baseAsset") or symbol[:-4]
+                return {
                     "symbol": symbol,
-                    "base_asset": item.get("baseAsset"),
+                    "base_asset": base_asset,
                     "quote_asset": "USDT",
                     "price": last,
-                    "change_24h_pct": (number(ticker.get("priceChangePercent")) * 100.0) if number(ticker.get("priceChangePercent")) is not None else None,
+                    "change_24h_pct": (
+                        number(ticker.get("priceChangePercent")) * 100.0
+                        if number(ticker.get("priceChangePercent")) is not None else None
+                    ),
                     "high_24h": number(ticker.get("highPrice")),
                     "low_24h": number(ticker.get("lowPrice")),
                     "base_volume_24h": volume,
                     "quote_volume_24h": quote_volume,
                     "quote_volume_estimate_usd": quote_volume_estimate,
-                    "quote_volume_estimate_method": "last price × base volume; estimate only" if quote_volume_estimate is not None else None,
+                    "quote_volume_estimate_method": (
+                        "last price × base volume; estimate only"
+                        if quote_volume_estimate is not None else None
+                    ),
                     "liquidity_sort_value": liquidity_sort_value,
-                    "liquidity_value_source": "MEXC quoteVolume" if quote_volume is not None else "calculated estimate" if quote_volume_estimate is not None else "unavailable",
+                    "liquidity_value_source": (
+                        "MEXC quoteVolume" if quote_volume is not None
+                        else "calculated estimate" if quote_volume_estimate is not None
+                        else "unavailable"
+                    ),
                     "trade_count_24h": ticker.get("count"),
                     "spot_bid": number(ticker.get("bidPrice")),
                     "spot_ask": number(ticker.get("askPrice")),
                     "spot_source": "MEXC Spot /api/v3/ticker/24hr",
-                })
+                }
+
+            for item in symbol_rows:
+                symbol = str(item.get("symbol") or "").upper()
+                if not symbol.endswith("USDT") or symbol not in ticker_map:
+                    continue
+                if item.get("quoteAsset") not in (None, "USDT"):
+                    continue
+                status = item.get("status")
+                # Known MEXC values include ENABLED and numeric/string 1 (online).
+                if status not in (None, "", "ENABLED", "1", 1, "TRADING"):
+                    continue
+                if item.get("isSpotTradingAllowed") is False:
+                    continue
+                eligible.append(make_row(symbol, ticker_map[symbol], item))
+
+            # If exchangeInfo's schema/status enum changes, use the live 24h
+            # ticker list as the public spot universe. Ticker symbols are actual
+            # exchange instruments; no synthetic or guessed prices are created.
+            if not eligible:
+                for ticker in ticker_rows:
+                    symbol = str(ticker.get("symbol") or "").upper()
+                    if not symbol.endswith("USDT"):
+                        continue
+                    if number(ticker.get("lastPrice")) is None:
+                        continue
+                    eligible.append(make_row(symbol, ticker))
+
             eligible.sort(key=lambda x: x.get("liquidity_sort_value") or 0, reverse=True)
             return eligible
         return await self.cached("spot_universe", load, 12)
