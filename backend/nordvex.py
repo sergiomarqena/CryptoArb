@@ -1,0 +1,380 @@
+"""Read-only MEXC Spot + Contract market-data service for NORDVEX.
+
+No private keys, account endpoints, or order execution are used here.
+"""
+import asyncio
+import os
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+import httpx
+
+SPOT = "https://api.mexc.com"
+CONTRACT = "https://contract.mexc.com/api/v1/contract"
+TIMEFRAMES = {
+    "1M": ("1m", "Min1"),
+    "5M": ("5m", "Min5"),
+    "30M": ("30m", "Min30"),
+    "1H": ("1h", "Min60"),
+    "1D": ("1d", "Day1"),
+}
+CACHE_TTL = int(os.getenv("NORDVEX_CACHE_TTL", "15"))
+CANDLE_CONCURRENCY = int(os.getenv("NORDVEX_CANDLE_CONCURRENCY", "6"))
+CANDLE_UNIVERSE_LIMIT = int(os.getenv("NORDVEX_CANDLE_UNIVERSE_LIMIT", "120"))
+REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "12"))
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def number(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+def pct_change(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous in (None, 0):
+        return None
+    return (current / previous - 1.0) * 100.0
+
+class MexcMarketData:
+    def __init__(self) -> None:
+        self.client: httpx.AsyncClient | None = None
+        self.cache: dict[str, tuple[float, Any]] = {}
+        self.cache_lock = asyncio.Lock()
+        self.semaphore = asyncio.Semaphore(max(1, CANDLE_CONCURRENCY))
+        self.oi_history: dict[str, list[tuple[float, float]]] = {}
+        self.last_provider_error: dict[str, str] = {}
+
+    async def start(self) -> None:
+        if self.client is None:
+            self.client = httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT,
+                headers={"User-Agent": "NORDVEX-ScreenerPro/1.0", "Accept": "application/json"},
+            )
+
+    async def close(self) -> None:
+        if self.client is not None:
+            await self.client.aclose()
+            self.client = None
+
+    async def request(self, url: str, params: dict | None = None) -> Any:
+        if self.client is None:
+            await self.start()
+        assert self.client is not None
+        response = await self.client.get(url, params=params)
+        if response.status_code == 429:
+            raise RuntimeError("MEXC rate limit (HTTP 429)")
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict) and payload.get("success") is False:
+            raise RuntimeError(f"MEXC provider error: {payload.get('message') or payload.get('code')}")
+        return payload
+
+    async def cached(self, key: str, loader, ttl: int = CACHE_TTL):
+        entry = self.cache.get(key)
+        if entry and time.monotonic() - entry[0] < ttl:
+            return entry[1], True
+        async with self.cache_lock:
+            entry = self.cache.get(key)
+            if entry and time.monotonic() - entry[0] < ttl:
+                return entry[1], True
+            value = await loader()
+            self.cache[key] = (time.monotonic(), value)
+            return value, False
+
+    async def spot_universe(self) -> tuple[list[dict], dict[str, dict]]:
+        async def load():
+            info, tickers = await asyncio.gather(
+                self.request(f"{SPOT}/api/v3/exchangeInfo"),
+                self.request(f"{SPOT}/api/v3/ticker/24hr"),
+            )
+            symbols = info.get("symbols", []) if isinstance(info, dict) else []
+            ticker_map = {x.get("symbol"): x for x in tickers if isinstance(x, dict)}
+            eligible = []
+            for item in symbols:
+                symbol = item.get("symbol", "")
+                if item.get("quoteAsset") != "USDT" or item.get("status") != "ENABLED":
+                    continue
+                if item.get("isSpotTradingAllowed") is False:
+                    continue
+                ticker = ticker_map.get(symbol)
+                if not ticker:
+                    continue
+                last = number(ticker.get("lastPrice"))
+                volume = number(ticker.get("volume"))
+                quote_volume = number(ticker.get("quoteVolume"))
+                if quote_volume is None and last is not None and volume is not None:
+                    quote_volume = last * volume
+                eligible.append({
+                    "symbol": symbol,
+                    "base_asset": item.get("baseAsset"),
+                    "quote_asset": "USDT",
+                    "price": last,
+                    "change_24h_pct": (number(ticker.get("priceChangePercent")) or 0.0) * 100.0,
+                    "high_24h": number(ticker.get("highPrice")),
+                    "low_24h": number(ticker.get("lowPrice")),
+                    "base_volume_24h": volume,
+                    "quote_volume_24h": quote_volume,
+                    "trade_count_24h": ticker.get("count"),
+                    "spot_bid": number(ticker.get("bidPrice")),
+                    "spot_ask": number(ticker.get("askPrice")),
+                    "spot_source": "MEXC Spot /api/v3/ticker/24hr",
+                })
+            eligible.sort(key=lambda x: x.get("quote_volume_24h") or 0, reverse=True)
+            return eligible
+        return await self.cached("spot_universe", load, 12)
+
+    async def contract_universe(self) -> dict[str, dict]:
+        async def load():
+            details, tickers = await asyncio.gather(
+                self.request(f"{CONTRACT}/detail"),
+                self.request(f"{CONTRACT}/ticker"),
+            )
+            detail_rows = details.get("data", []) if isinstance(details, dict) else []
+            ticker_rows = tickers.get("data", []) if isinstance(tickers, dict) else []
+            detail_map = {x.get("symbol"): x for x in detail_rows if isinstance(x, dict)}
+            result = {}
+            for row in ticker_rows:
+                if not isinstance(row, dict):
+                    continue
+                symbol = row.get("symbol", "")
+                if not symbol.endswith("_USDT"):
+                    continue
+                detail = detail_map.get(symbol, {})
+                result[symbol.replace("_", "")] = {
+                    "contract_symbol": symbol,
+                    "contract_available": bool(detail),
+                    "contract_last_price": number(row.get("lastPrice")),
+                    "contract_change_24h_pct": (number(row.get("riseFallRate")) or 0.0) * 100.0,
+                    "contract_volume_24h": number(row.get("volume24")),
+                    "contract_amount_24h": number(row.get("amount24")),
+                    "open_interest_contracts": number(row.get("holdVol")),
+                    "funding_rate": number(row.get("fundingRate")),
+                    "contract_bid": number(row.get("bid1")),
+                    "contract_ask": number(row.get("ask1")),
+                    "contract_timestamp": row.get("timestamp"),
+                    "contract_source": "MEXC Contract /api/v1/contract/ticker",
+                    "contract_size": number(detail.get("contractSize")),
+                    "price_scale": detail.get("priceScale"),
+                    "volume_scale": detail.get("volScale"),
+                }
+            return result
+        data, _ = await self.cached("contract_universe", load, 12)
+        return data
+
+    async def candles(self, symbol: str, timeframe: str, market: str = "spot", limit: int = 120) -> dict:
+        tf = timeframe.upper()
+        if tf not in TIMEFRAMES:
+            raise ValueError("Unsupported timeframe")
+        spot_interval, contract_interval = TIMEFRAMES[tf]
+        limit = max(30, min(int(limit), 500))
+        key = f"candles:{market}:{symbol}:{tf}:{limit}"
+
+        async def load():
+            if market == "spot":
+                raw = await self.request(f"{SPOT}/api/v3/klines", {
+                    "symbol": symbol.upper(), "interval": spot_interval, "limit": limit
+                })
+                rows = [{
+                    "time": int(x[0]), "open": number(x[1]), "high": number(x[2]),
+                    "low": number(x[3]), "close": number(x[4]), "volume": number(x[5]),
+                    "quote_volume": number(x[7]),
+                } for x in raw]
+                source = "MEXC Spot /api/v3/klines"
+            elif market == "contract":
+                contract_symbol = symbol.upper().replace("USDT", "_USDT")
+                raw = await self.request(f"{CONTRACT}/kline/{contract_symbol}", {"interval": contract_interval})
+                data = raw.get("data", {})
+                times = data.get("time", [])
+                rows = []
+                for i, ts in enumerate(times[-limit:]):
+                    idx = len(times) - len(times[-limit:]) + i
+                    rows.append({
+                        "time": int(ts) * 1000, "open": number(data.get("open", [])[idx]),
+                        "high": number(data.get("high", [])[idx]), "low": number(data.get("low", [])[idx]),
+                        "close": number(data.get("close", [])[idx]), "volume": number(data.get("vol", [])[idx]),
+                        "quote_volume": number(data.get("amount", [])[idx]),
+                    })
+                source = "MEXC Contract /api/v1/contract/kline"
+            else:
+                raise ValueError("market must be spot or contract")
+            return {"symbol": symbol.upper(), "market": market, "timeframe": tf,
+                    "candles": rows, "source": source, "updated_at": now_iso()}
+        data, cache_hit = await self.cached(key, load, 8)
+        return {**data, "cached": cache_hit}
+
+    def candle_metrics(self, rows: list[dict]) -> dict:
+        valid = [x for x in rows if x.get("close") is not None]
+        if len(valid) < 3:
+            return {"price_change_pct": None, "volume_change_pct": None,
+                    "relative_volume": None, "metric_status": "insufficient_candle_history"}
+        current = valid[-1]
+        previous = valid[-2]
+        price_change = pct_change(current.get("close"), current.get("open"))
+        volume_change = pct_change(current.get("volume"), previous.get("volume"))
+        baseline_rows = valid[-21:-1]
+        baseline = [x.get("volume") for x in baseline_rows if x.get("volume") is not None]
+        rel_volume = (current.get("volume") / (sum(baseline) / len(baseline))) if baseline and sum(baseline) > 0 and current.get("volume") is not None else None
+        return {
+            "price_change_pct": price_change,
+            "volume_change_pct": volume_change,
+            "relative_volume": rel_volume,
+            "metric_status": "ok" if rel_volume is not None else "partial_candle_history",
+            "relative_volume_baseline": "mean of preceding 20 candles",
+        }
+
+    def oi_change(self, symbol: str, current: float | None, timeframe: str) -> float | None:
+        if current is None:
+            return None
+        now = time.time()
+        history = self.oi_history.setdefault(symbol, [])
+        history.append((now, current))
+        cutoff = now - 7 * 86400
+        history[:] = [(ts, val) for ts, val in history if ts >= cutoff]
+        minutes = {"1M": 60, "5M": 300, "30M": 1800, "1H": 3600, "1D": 86400}[timeframe]
+        prior = next((val for ts, val in reversed(history[:-1]) if ts <= now - minutes), None)
+        return pct_change(current, prior)
+
+    async def markets(self, timeframe: str = "5M") -> dict:
+        tf = timeframe.upper()
+        if tf not in TIMEFRAMES:
+            raise ValueError("Unsupported timeframe")
+        spot_rows, contracts = await asyncio.gather(self.spot_universe(), self.contract_universe())
+        semaphore = self.semaphore
+
+        async def enrich(row: dict) -> dict:
+            symbol = row["symbol"]
+            contract = contracts.get(symbol)
+            result = {
+                **row,
+                "open_interest_contracts": contract.get("open_interest_contracts") if contract else None,
+                "oi_change_pct": None,
+                "funding_rate": contract.get("funding_rate") if contract else None,
+                "contract_market_available": bool(contract),
+                "market_cap_usd": None,
+                "fully_diluted_market_cap_usd": None,
+                "token_unlock": "UNKNOWN",
+                "whale_activity": "INSUFFICIENT_DATA",
+                "signal": "NEUTRAL",
+                "signal_status": "not_scored",
+                "metric_source": "MEXC candle-derived metrics",
+            }
+            if contract:
+                result.update({k: v for k, v in contract.items() if k != "contract_source"})
+                result["oi_change_pct"] = self.oi_change(symbol, contract.get("open_interest_contracts"), tf)
+            async with semaphore:
+                try:
+                    candle_data = await self.candles(symbol, tf, "spot", 35)
+                    result.update(self.candle_metrics(candle_data["candles"]))
+                    result["candle_updated_at"] = candle_data["updated_at"]
+                except Exception as exc:
+                    result.update({"price_change_pct": None, "volume_change_pct": None,
+                                   "relative_volume": None, "metric_status": "unavailable",
+                                   "candle_error": str(exc)[:140]})
+            return result
+
+        # All enabled USDT spot pairs are listed. Candle-derived enrichments are
+        # bounded to the highest-turnover universe to protect MEXC public limits.
+        selected = spot_rows[:max(1, CANDLE_UNIVERSE_LIMIT)]
+        enriched = await asyncio.gather(*(enrich(row) for row in selected), return_exceptions=True)
+        by_symbol = {}
+        for item in enriched:
+            if isinstance(item, dict):
+                by_symbol[item["symbol"]] = item
+        output = []
+        for row in spot_rows:
+            output.append(by_symbol.get(row["symbol"], {
+                **row, "price_change_pct": None, "volume_change_pct": None,
+                "relative_volume": None, "metric_status": "not_enriched_rate_limit_budget",
+                "open_interest_contracts": None, "oi_change_pct": None, "funding_rate": None,
+                "contract_market_available": row["symbol"] in contracts,
+                "market_cap_usd": None, "fully_diluted_market_cap_usd": None,
+                "token_unlock": "UNKNOWN", "whale_activity": "INSUFFICIENT_DATA",
+                "signal": "NEUTRAL", "signal_status": "not_scored",
+            }))
+        return {
+            "data": output,
+            "count": len(output),
+            "spot_pairs_scanned": len(spot_rows),
+            "candle_enriched_pairs": len(by_symbol),
+            "timeframe": tf,
+            "sources": ["MEXC Spot public API", "MEXC Contract public API"],
+            "updated_at": now_iso(),
+            "data_policy": "Unavailable values are null/UNKNOWN; spot and contract metrics remain separate.",
+            "candle_scan_limit": CANDLE_UNIVERSE_LIMIT,
+        }
+
+    async def orderbook(self, symbol: str, market: str = "spot", limit: int = 100) -> dict:
+        if market == "spot":
+            payload = await self.request(f"{SPOT}/api/v3/depth", {"symbol": symbol.upper(), "limit": min(limit, 5000)})
+            bids, asks = payload.get("bids", []), payload.get("asks", [])
+            source = "MEXC Spot /api/v3/depth"
+        elif market == "contract":
+            contract_symbol = symbol.upper().replace("USDT", "_USDT")
+            payload = await self.request(f"{CONTRACT}/depth/{contract_symbol}", {"limit": min(limit, 1000)})
+            bids, asks = payload.get("bids", []), payload.get("asks", [])
+            source = "MEXC Contract /api/v1/contract/depth"
+        else:
+            raise ValueError("market must be spot or contract")
+        bid_value = sum((number(x[0]) or 0) * (number(x[1]) or 0) for x in bids)
+        ask_value = sum((number(x[0]) or 0) * (number(x[1]) or 0) for x in asks)
+        total = bid_value + ask_value
+        best_bid = number(bids[0][0]) if bids else None
+        best_ask = number(asks[0][0]) if asks else None
+        return {
+            "symbol": symbol.upper(), "market": market, "bids": bids, "asks": asks,
+            "bid_notional": bid_value, "ask_notional": ask_value,
+            "bid_ask_ratio": bid_value / ask_value if ask_value > 0 else None,
+            "imbalance_pct": ((bid_value - ask_value) / total * 100) if total > 0 else None,
+            "spread": best_ask - best_bid if best_ask is not None and best_bid is not None else None,
+            "spread_pct": ((best_ask - best_bid) / ((best_ask + best_bid) / 2) * 100)
+                if best_ask is not None and best_bid is not None and best_ask + best_bid > 0 else None,
+            "source": source, "updated_at": now_iso(),
+            "warning": "Visible resting liquidity only; not proof of executed buying or selling.",
+        }
+
+    async def recent_trades(self, symbol: str, market: str = "spot", limit: int = 500) -> dict:
+        if market == "spot":
+            rows = await self.request(f"{SPOT}/api/v3/trades", {"symbol": symbol.upper(), "limit": min(limit, 1000)})
+            trades = [{
+                "price": number(x.get("price")), "quantity": number(x.get("qty")),
+                "notional": number(x.get("quoteQty")),
+                "side": "SELL_TAKER" if x.get("isBuyerMaker") else "BUY_TAKER",
+                "timestamp": x.get("time"), "source_market": "spot",
+            } for x in rows]
+            source = "MEXC Spot /api/v3/trades"
+        elif market == "contract":
+            contract_symbol = symbol.upper().replace("USDT", "_USDT")
+            payload = await self.request(f"{CONTRACT}/deals/{contract_symbol}", {"limit": min(limit, 100)})
+            rows = payload.get("data", []) if isinstance(payload, dict) else []
+            trades = [{
+                "price": number(x.get("p")), "quantity": number(x.get("v")),
+                "notional": (number(x.get("p")) or 0) * (number(x.get("v")) or 0),
+                "side": "BUY" if x.get("T") == 1 else "SELL" if x.get("T") == 2 else "UNKNOWN",
+                "open_position_flag": x.get("O"), "timestamp": x.get("t"), "source_market": "contract",
+            } for x in rows]
+            source = "MEXC Contract /api/v1/contract/deals"
+        else:
+            raise ValueError("market must be spot or contract")
+        notionals = [x["notional"] for x in trades if x.get("notional") is not None]
+        # Large-trade threshold is relative to the observed sample, not a wallet identity.
+        threshold = sorted(notionals)[int((len(notionals) - 1) * 0.99)] if len(notionals) >= 20 else None
+        large = [x for x in trades if threshold is not None and x.get("notional") is not None and x["notional"] >= threshold]
+        buy_notional = sum(x["notional"] or 0 for x in large if x["side"] in ("BUY", "BUY_TAKER"))
+        sell_notional = sum(x["notional"] or 0 for x in large if x["side"] in ("SELL", "SELL_TAKER"))
+        return {
+            "symbol": symbol.upper(), "market": market, "trades": trades,
+            "sample_size": len(trades), "large_trade_threshold_notional": threshold,
+            "large_trade_sample": large, "large_buy_notional": buy_notional,
+            "large_sell_notional": sell_notional,
+            "whale_buying": "INSUFFICIENT_DATA" if threshold is None else "DETECTED" if buy_notional > sell_notional * 1.5 and buy_notional > 0 else "NOT_DETECTED",
+            "whale_selling": "INSUFFICIENT_DATA" if threshold is None else "DETECTED" if sell_notional > buy_notional * 1.5 and sell_notional > 0 else "NOT_DETECTED",
+            "source": source, "updated_at": now_iso(),
+            "caveat": "Large trades are a sample-relative heuristic, not verified whale identity or wallet attribution.",
+        }
+
+service = MexcMarketData()
