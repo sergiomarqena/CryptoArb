@@ -65,7 +65,7 @@ def score_market(row: dict) -> dict:
     available_weight = sum(weights[k] for k in features)
     if available_weight <= 0:
         return {
-            "signal": "NEUTRAL", "signal_status": "insufficient_data",
+            "signal": "UNAVAILABLE", "signal_status": "insufficient_data",
             "bullish_probability": None, "bearish_probability": None, "neutral_probability": None,
             "confidence_pct": None, "signal_strength": None,
             "supporting_evidence": [], "conflicting_evidence": [],
@@ -78,7 +78,9 @@ def score_market(row: dict) -> dict:
     probabilities = [v / total * 100.0 for v in expv]
     coverage = available_weight / sum(weights.values())
     confidence = coverage * min(1.0, 0.15 + abs(raw) * 1.65) * 100.0
-    bull, bear, neutral = probabilities
+    bull = round(probabilities[0], 2)
+    bear = round(probabilities[1], 2)
+    neutral = round(100.0 - bull - bear, 2)
     signal = "BULLISH" if bull >= 48 and bull > bear + 8 and confidence >= 20 else (
         "BEARISH" if bear >= 48 and bear > bull + 8 and confidence >= 20 else "NEUTRAL"
     )
@@ -141,7 +143,7 @@ class MexcMarketData:
             self.cache[key] = (time.monotonic(), value)
             return value, False
 
-    async def spot_universe(self) -> tuple[list[dict], dict[str, dict]]:
+    async def spot_universe(self) -> tuple[list[dict], bool]:
         async def load():
             info, tickers = await asyncio.gather(
                 self.request(f"{SPOT}/api/v3/exchangeInfo"),
@@ -162,24 +164,28 @@ class MexcMarketData:
                 last = number(ticker.get("lastPrice"))
                 volume = number(ticker.get("volume"))
                 quote_volume = number(ticker.get("quoteVolume"))
-                if quote_volume is None and last is not None and volume is not None:
-                    quote_volume = last * volume
+                quote_volume_estimate = last * volume if quote_volume is None and last is not None and volume is not None else None
+                liquidity_sort_value = quote_volume if quote_volume is not None else quote_volume_estimate
                 eligible.append({
                     "symbol": symbol,
                     "base_asset": item.get("baseAsset"),
                     "quote_asset": "USDT",
                     "price": last,
-                    "change_24h_pct": (number(ticker.get("priceChangePercent")) or 0.0) * 100.0,
+                    "change_24h_pct": (number(ticker.get("priceChangePercent")) * 100.0) if number(ticker.get("priceChangePercent")) is not None else None,
                     "high_24h": number(ticker.get("highPrice")),
                     "low_24h": number(ticker.get("lowPrice")),
                     "base_volume_24h": volume,
                     "quote_volume_24h": quote_volume,
+                    "quote_volume_estimate_usd": quote_volume_estimate,
+                    "quote_volume_estimate_method": "last price × base volume; estimate only" if quote_volume_estimate is not None else None,
+                    "liquidity_sort_value": liquidity_sort_value,
+                    "liquidity_value_source": "MEXC quoteVolume" if quote_volume is not None else "calculated estimate" if quote_volume_estimate is not None else "unavailable",
                     "trade_count_24h": ticker.get("count"),
                     "spot_bid": number(ticker.get("bidPrice")),
                     "spot_ask": number(ticker.get("askPrice")),
                     "spot_source": "MEXC Spot /api/v3/ticker/24hr",
                 })
-            eligible.sort(key=lambda x: x.get("quote_volume_24h") or 0, reverse=True)
+            eligible.sort(key=lambda x: x.get("liquidity_sort_value") or 0, reverse=True)
             return eligible
         return await self.cached("spot_universe", load, 12)
 
@@ -204,7 +210,7 @@ class MexcMarketData:
                     "contract_symbol": symbol,
                     "contract_available": bool(detail),
                     "contract_last_price": number(row.get("lastPrice")),
-                    "contract_change_24h_pct": (number(row.get("riseFallRate")) or 0.0) * 100.0,
+                    "contract_change_24h_pct": (number(row.get("riseFallRate")) * 100.0) if number(row.get("riseFallRate")) is not None else None,
                     "contract_volume_24h": number(row.get("volume24")),
                     "contract_amount_24h": number(row.get("amount24")),
                     "open_interest_contracts": number(row.get("holdVol")),
