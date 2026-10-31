@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from nordvex import service, TIMEFRAMES
 
 APP_NAME = "NORDVEX — SCREENER PRO"
+YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart"
 app = FastAPI(
     title=APP_NAME,
     version="2.0.0",
@@ -174,16 +175,46 @@ async def coin_detail(symbol: str, timeframe: str = "5M"):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Coin detail unavailable: {str(exc)[:180]}")
 
+async def macro_snapshot():
+    instruments = {
+        "XAUUSD": ("GC=F", "Gold futures reference"),
+        "USOIL": ("CL=F", "WTI crude futures reference"),
+        "DXY": ("DX-Y.NYB", "US Dollar Index reference"),
+    }
+    async def load_one(key, meta):
+        ticker, label = meta
+        try:
+            payload = await service.request(
+                f"{YAHOO_CHART}/{ticker}", {"range": "5d", "interval": "5m"}
+            )
+            result = payload["chart"]["result"][0]
+            quote = result["indicators"]["quote"][0]
+            closes = [v for v in quote.get("close", []) if v is not None]
+            timestamps = result.get("timestamp", [])
+            price = closes[-1] if closes else None
+            previous = closes[-2] if len(closes) > 1 else None
+            change = ((price / previous) - 1) * 100 if price and previous else None
+            return key, {
+                "symbol": key, "provider_symbol": ticker, "label": label,
+                "last": price, "change_pct_latest_interval": change,
+                "currency": result.get("meta", {}).get("currency"),
+                "exchange_timezone": result.get("meta", {}).get("exchangeTimezoneName"),
+                "last_bar_epoch": timestamps[-1] if timestamps else None,
+                "source": "Yahoo Finance chart", "status": "ok" if price is not None else "no_data",
+            }
+        except Exception as exc:
+            return key, {"symbol": key, "provider_symbol": ticker, "label": label,
+                         "source": "Yahoo Finance chart", "status": "unavailable",
+                         "error": str(exc)[:160]}
+    values = await asyncio.gather(*(load_one(k, v) for k, v in instruments.items()))
+    return {
+        "instruments": dict(values), "updated_at": utc_now(),
+        "note": "Public delayed/indicative macro references; futures are not identical to every broker CFD quote.",
+    }
+
 @app.get("/api/v1/macro")
 async def macro():
-    # Kept as an explicit unavailable status until a stable, verifiable macro feed
-    # is configured in this MEXC-focused release.
-    return {
-        "instruments": {},
-        "updated_at": utc_now(),
-        "status": "not_configured",
-        "note": "Macro reference feeds are not part of the MEXC crypto data provider.",
-    }
+    return await macro_snapshot()
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
