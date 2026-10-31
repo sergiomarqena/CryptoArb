@@ -6,7 +6,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from nordvex import service, TIMEFRAMES
+from nordvex import service, TIMEFRAMES, score_market
 
 APP_NAME = "NORDVEX — SCREENER PRO"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart"
@@ -140,19 +140,35 @@ async def open_interest(symbol: str, timeframe: str = "5M"):
 async def coin_detail(symbol: str, timeframe: str = "5M"):
     symbol = symbol.upper()
     try:
-        markets_data, candles_data, spot_book, contract_book, spot_trades = await asyncio.gather(
-            service.markets(timeframe),
+        spot_data, contracts, candles_data, spot_book, contract_book, spot_trades = await asyncio.gather(
+            service.spot_universe(),
+            service.contract_universe(),
             service.candles(symbol, timeframe, "spot", 200),
             service.orderbook(symbol, "spot", 100),
             service.orderbook(symbol, "contract", 100),
             service.recent_trades(symbol, "spot", 500),
             return_exceptions=True,
         )
-        market_row = None
-        if not isinstance(markets_data, Exception):
-            market_row = next((x for x in markets_data["data"] if x["symbol"] == symbol), None)
         def data_or_none(value):
             return None if isinstance(value, Exception) else value
+        market_row = None
+        if not isinstance(spot_data, Exception) and not isinstance(contracts, Exception):
+            spot_rows, _ = spot_data
+            market_row = next((x.copy() for x in spot_rows if x["symbol"] == symbol), None)
+            if market_row is not None:
+                if not isinstance(candles_data, Exception):
+                    market_row.update(service.candle_metrics(candles_data["candles"]))
+                else:
+                    market_row.update({"price_change_pct": None, "volume_change_pct": None,
+                                       "relative_volume": None, "metric_status": "unavailable"})
+                contract = contracts.get(symbol)
+                market_row["contract_market_available"] = bool(contract)
+                market_row["open_interest_contracts"] = contract.get("open_interest_contracts") if contract else None
+                market_row["funding_rate"] = contract.get("funding_rate") if contract else None
+                market_row["oi_change_pct"] = service.oi_change(symbol, market_row["open_interest_contracts"], timeframe.upper()) if contract else None
+                if contract:
+                    market_row.update({k: v for k, v in contract.items() if k != "contract_source"})
+                market_row.update(score_market(market_row))
         whale = data_or_none(spot_trades)
         if whale is None:
             whale = {"whale_buying": "INSUFFICIENT_DATA", "whale_selling": "INSUFFICIENT_DATA",
