@@ -23,6 +23,7 @@ TIMEFRAMES = {
 CACHE_TTL = int(os.getenv("NORDVEX_CACHE_TTL", "15"))
 CANDLE_CONCURRENCY = int(os.getenv("NORDVEX_CANDLE_CONCURRENCY", "6"))
 CANDLE_UNIVERSE_LIMIT = int(os.getenv("NORDVEX_CANDLE_UNIVERSE_LIMIT", "120"))
+WHALE_SCAN_LIMIT = int(os.getenv("NORDVEX_WHALE_SCAN_LIMIT", "20"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "12"))
 
 def now_iso() -> str:
@@ -307,7 +308,7 @@ class MexcMarketData:
         spot_rows, contracts = await asyncio.gather(self.spot_universe(), self.contract_universe())
         semaphore = self.semaphore
 
-        async def enrich(row: dict) -> dict:
+        async def enrich(row: dict, scan_whales: bool = False) -> dict:
             symbol = row["symbol"]
             contract = contracts.get(symbol)
             result = {
@@ -332,6 +333,17 @@ class MexcMarketData:
                     candle_data = await self.candles(symbol, tf, "spot", 35)
                     result.update(self.candle_metrics(candle_data["candles"]))
                     result["candle_updated_at"] = candle_data["updated_at"]
+                    if scan_whales:
+                        trade_data = await self.recent_trades(symbol, "spot", 500)
+                        result["whale_buying"] = trade_data["whale_buying"]
+                        result["whale_selling"] = trade_data["whale_selling"]
+                        result["whale_sample_size"] = trade_data["sample_size"]
+                        result["whale_large_trade_count"] = len(trade_data["large_trade_sample"])
+                        result["whale_activity"] = (
+                            "DETECTED" if "DETECTED" in (trade_data["whale_buying"], trade_data["whale_selling"])
+                            else "NOT_DETECTED" if trade_data["whale_buying"] == "NOT_DETECTED" and trade_data["whale_selling"] == "NOT_DETECTED"
+                            else "INSUFFICIENT_DATA"
+                        )
                 except Exception as exc:
                     result.update({"price_change_pct": None, "volume_change_pct": None,
                                    "relative_volume": None, "metric_status": "unavailable",
@@ -342,7 +354,10 @@ class MexcMarketData:
         # All enabled USDT spot pairs are listed. Candle-derived enrichments are
         # bounded to the highest-turnover universe to protect MEXC public limits.
         selected = spot_rows[:max(1, CANDLE_UNIVERSE_LIMIT)]
-        enriched = await asyncio.gather(*(enrich(row) for row in selected), return_exceptions=True)
+        enriched = await asyncio.gather(
+            *(enrich(row, i < max(0, WHALE_SCAN_LIMIT)) for i, row in enumerate(selected)),
+            return_exceptions=True
+        )
         by_symbol = {}
         for item in enriched:
             if isinstance(item, dict):
@@ -361,6 +376,8 @@ class MexcMarketData:
                 "contract_volume_24h": contract.get("contract_volume_24h") if contract else None,
                 "market_cap_usd": None, "fully_diluted_market_cap_usd": None,
                 "token_unlock": "UNKNOWN", "whale_activity": "INSUFFICIENT_DATA",
+                "whale_buying": "INSUFFICIENT_DATA", "whale_selling": "INSUFFICIENT_DATA",
+                "whale_sample_size": None, "whale_large_trade_count": None,
             }
             fallback.update(score_market(fallback))
             output.append(by_symbol.get(row["symbol"], fallback))
@@ -440,8 +457,8 @@ class MexcMarketData:
             "sample_size": len(trades), "large_trade_threshold_notional": threshold,
             "large_trade_sample": large, "large_buy_notional": buy_notional,
             "large_sell_notional": sell_notional,
-            "whale_buying": "INSUFFICIENT_DATA" if threshold is None else "DETECTED" if buy_notional > sell_notional * 1.5 and buy_notional > 0 else "NOT_DETECTED",
-            "whale_selling": "INSUFFICIENT_DATA" if threshold is None else "DETECTED" if sell_notional > buy_notional * 1.5 and sell_notional > 0 else "NOT_DETECTED",
+            "whale_buying": "INSUFFICIENT_DATA" if threshold is None or len(large) < 3 else "DETECTED" if buy_notional > sell_notional * 1.5 and buy_notional > 0 else "NOT_DETECTED",
+            "whale_selling": "INSUFFICIENT_DATA" if threshold is None or len(large) < 3 else "DETECTED" if sell_notional > buy_notional * 1.5 and sell_notional > 0 else "NOT_DETECTED",
             "source": source, "updated_at": now_iso(),
             "caveat": "Large trades are a sample-relative heuristic, not verified whale identity or wallet attribution.",
         }
