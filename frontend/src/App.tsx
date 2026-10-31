@@ -1,84 +1,135 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, ArrowDownRight, ArrowUpRight, Clock3, Database, Globe2, RefreshCw, Radio, Search, ShieldCheck, Wifi, WifiOff } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createChart, CandlestickSeries, type IChartApi, type UTCTimestamp } from 'lightweight-charts';
+import { Activity, ArrowDownRight, ArrowUpRight, BarChart3, ChevronDown, CircleHelp, Database, Filter, Globe2, Layers3, RefreshCw, Search, ShieldAlert, Signal, Waves, X } from 'lucide-react';
 
-const API = 'https://mr-most-profitable-api-production.up.railway.app';
-type Market = { symbol:string; base_asset:string; last_price:number; price_change_pct_24h:number; high_24h:number; low_24h:number; quote_volume_24h:number; trade_count_24h:number; funding_rate:number|null; mark_price:number|null; data_sources:string[] };
-type MacroItem = { symbol:string; label:string; last:number|null; change_pct_latest_interval:number|null; currency:string|null; exchange_timezone:string|null; last_bar_epoch:number|null; source:string; status:string; error?:string };
-type Overview = { market_count:number; top_gainers:Market[]; top_losers:Market[]; highest_quote_volume:Market[]; updated_at:string };
-type Macro = { instruments:Record<string,MacroItem>; updated_at:string; note:string };
-type Kline = { time:number; open:number; high:number; low:number; close:number; volume:number };
-const n=(v:number|undefined|null,d=2)=>v==null?'—':v.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
-const money=(v:number|undefined|null)=>v==null?'—':'$'+n(v,v<1?5:2);
-const pct=(v:number|undefined|null)=>v==null?'—':(v>0?'+':'')+n(v,2)+'%';
+const API = (import.meta as any).env?.VITE_API_URL || 'https://mr-most-profitable-api-production.up.railway.app';
+type Market = {
+  symbol:string; base_asset:string; price:number|null; change_24h_pct:number|null;
+  price_change_pct:number|null; volume_change_pct:number|null; relative_volume:number|null;
+  quote_volume_24h:number|null; base_volume_24h:number|null; high_24h:number|null; low_24h:number|null;
+  open_interest_contracts:number|null; oi_change_pct:number|null; funding_rate:number|null;
+  contract_market_available:boolean; market_cap_usd:number|null; fully_diluted_market_cap_usd:number|null;
+  token_unlock:'YES'|'NO'|'UNKNOWN'; whale_activity:string; signal:string; metric_status:string;
+};
+type Candle = {time:number;open:number;high:number;low:number;close:number;volume:number|null};
+type Detail = {symbol:string;market:Market|null;candles:{candles:Candle[];source:string}|null;
+  spot_orderbook:any;contract_orderbook:any;trade_intelligence:any;whale_buying:string;whale_selling:string;
+  whale_zone_status:string;market_cap_status:string;token_unlock_status:string;updated_at:string};
+const money=(v:number|null|undefined)=>v==null?'—':v>=1000?'$'+v.toLocaleString('en-US',{maximumFractionDigits:2}):'$'+v.toPrecision(5);
+const compact=(v:number|null|undefined)=>v==null?'—':Intl.NumberFormat('en-US',{notation:'compact',maximumFractionDigits:2}).format(v);
+const pct=(v:number|null|undefined)=>v==null?'—':(v>0?'+':'')+v.toFixed(2)+'%';
+const num=(v:number|null|undefined,d=2)=>v==null?'—':v.toLocaleString('en-US',{maximumFractionDigits:d});
 const stamp=(v?:string)=>v?new Date(v).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—';
-async function get<T,>(path:string):Promise<T>{const r=await fetch(API+path,{cache:'no-store'});if(!r.ok)throw new Error('API '+r.status+' · '+path);return r.json();}
-function Change({value}:{value:number|null|undefined}){return <span className={value==null?'neutral':value>=0?'positive':'negative'}>{value!=null&& (value>=0?<ArrowUpRight size={13}/>:<ArrowDownRight size={13}/>)}{pct(value)}</span>}
-function Sparkline({items}:{items:Kline[]}){if(items.length<2)return <div className="spark-empty">Waiting for candle data…</div>;const vals=items.map(x=>x.close),lo=Math.min(...vals),hi=Math.max(...vals),range=hi-lo||1;const points=vals.map((v,i)=>`${i/(vals.length-1)*100},${38-(v-lo)/range*32}`).join(' ');return <svg className="sparkline" viewBox="0 0 100 42" preserveAspectRatio="none"><polyline points={points} fill="none" stroke="#d66bc5" strokeWidth="1.4" vectorEffect="non-scaling-stroke"/></svg>}
-function App(){
- const [tab,setTab]=useState('OVERVIEW');
- const [markets,setMarkets]=useState<Market[]>([]);
- const [overview,setOverview]=useState<Overview|null>(null);
- const [macro,setMacro]=useState<Macro|null>(null);
- const [candles,setCandles]=useState<Kline[]>([]);
- const [selected,setSelected]=useState('BTCUSDT');
- const [query,setQuery]=useState('');
- const [loading,setLoading]=useState(true);
- const [refreshing,setRefreshing]=useState(false);
- const [error,setError]=useState('');
- const [updated,setUpdated]=useState('');
- const [source,setSource]=useState('—');
- const [oi,setOi]=useState<number|null>(null);
- const [oiError,setOiError]=useState('');
- const [clock,setClock]=useState(new Date());
- const refresh=useCallback(async()=>{
-   setRefreshing(true);
-   try{
-     const [m,o,x]=await Promise.all([get<{data:Market[];source:string;updated_at:string}>('/api/v1/crypto/markets'),get<Overview>('/api/v1/crypto/overview'),get<Macro>('/api/v1/macro')]);
-     setMarkets(m.data);setOverview(o);setMacro(x);setUpdated(m.updated_at);setSource(m.source);setError('');
-   }catch(e){setError(e instanceof Error?e.message:'Unable to reach market API');}
-   finally{setLoading(false);setRefreshing(false);}
- },[]);
- const loadDetail=useCallback(async(symbol:string)=>{
-   try{const c=await get<{candles:Kline[]}>('/api/v1/crypto/klines/'+symbol+'?interval=5m&limit=72');setCandles(c.candles);}
-   catch{setCandles([]);}
-   try{const v=await get<{open_interest_contracts:number}>('/api/v1/crypto/open-interest/'+symbol);setOi(v.open_interest_contracts);setOiError('');}
-   catch{setOi(null);setOiError('Open interest unavailable');}
- },[]);
- useEffect(()=>{refresh();const t=setInterval(refresh,30000);const c=setInterval(()=>setClock(new Date()),1000);return()=>{clearInterval(t);clearInterval(c)}},[refresh]);
- useEffect(()=>{loadDetail(selected)},[selected,loadDetail]);
- const filtered=useMemo(()=>markets.filter(m=>m.symbol.toLowerCase().includes(query.toLowerCase())),[markets,query]);
- const chosen=markets.find(m=>m.symbol===selected);
- const topVolume=overview?.highest_quote_volume?.slice(0,8)??[];
- return <div className="app-shell">
-  <header className="topbar"><a className="brand" href="#"><span className="brand-icon">M</span><span><b>MR MOST PROFITABLE</b><small>MARKET INTELLIGENCE TERMINAL</small></span></a><nav>{['OVERVIEW','CRYPTO','MACRO','DATA'].map(x=><button key={x} className={tab===x?'active':''} onClick={()=>setTab(x)}>{x}</button>)}</nav><div className="top-meta"><span className={error?'connection down':'connection'}><i/>{error?'DEGRADED':'API CONNECTED'}</span><span className="clock">{clock.toLocaleTimeString('en-GB')}</span><button className="refresh" onClick={refresh} disabled={refreshing}><RefreshCw size={15} className={refreshing?'spin':''}/></button></div></header>
-  <div className="ticker"><span>LIVE PUBLIC DATA</span>{markets.slice(0,7).map(m=><span key={m.symbol}>{m.base_asset} <b>{money(m.last_price)}</b> <Change value={m.price_change_pct_24h}/></span>)}<span className="ticker-end">30s REFRESH</span></div>
-  <main className="content">
-   <section className="page-heading"><div><div className="eyebrow">COMMAND CENTER / {tab}</div><h1>Market <em>intelligence</em></h1><p>Read-only market monitoring · factual data, no trade signals or order execution</p></div><div className="updated"><span className="live-dot"/> PUBLIC FEEDS <b>{stamp(updated)}</b></div></section>
-   {error&&<div className="alert"><WifiOff size={16}/><span>Live API issue: {error}. Showing last successfully loaded data, if available.</span></div>}
-   {loading&&!markets.length?<div className="loading"><RefreshCw className="spin"/> Connecting to live market feeds…</div>:<>
-    {(tab==='OVERVIEW'||tab==='CRYPTO')&&<>
-     <section className="metric-grid">
-      <article className="metric"><label><Activity size={14}/> TRACKED SPOT MARKETS</label><strong>{overview?.market_count??markets.length}</strong><small>USDT pairs · Binance Spot</small></article>
-      <article className="metric"><label><ArrowUpRight size={14}/> TOP 24H GAINER</label><strong className="positive">{overview?.top_gainers?.[0]?.base_asset??'—'}</strong><small>{pct(overview?.top_gainers?.[0]?.price_change_pct_24h)} · descriptive only</small></article>
-      <article className="metric"><label><ArrowDownRight size={14}/> TOP 24H DECLINER</label><strong className="negative">{overview?.top_losers?.[0]?.base_asset??'—'}</strong><small>{pct(overview?.top_losers?.[0]?.price_change_pct_24h)} · descriptive only</small></article>
-      <article className="metric"><label><Database size={14}/> DATA PROVIDER</label><strong className="provider">BINANCE</strong><small>Spot + USD-M Futures context</small></article>
-     </section>
-     <section className="two-col">
-      <article className="panel focus-panel"><div className="panel-head"><div><div className="eyebrow">ASSET MONITOR</div><h2>{chosen?.base_asset??selected.replace('USDT','')} <span>/ USDT</span></h2></div><select value={selected} onChange={e=>setSelected(e.target.value)}>{markets.slice(0,100).map(m=><option key={m.symbol} value={m.symbol}>{m.symbol}</option>)}</select></div><div className="focus-price">{money(chosen?.last_price)} <Change value={chosen?.price_change_pct_24h}/></div><div className="chart-area"><Sparkline items={candles}/></div><div className="detail-grid"><div><small>24H HIGH</small><b>{money(chosen?.high_24h)}</b></div><div><small>24H LOW</small><b>{money(chosen?.low_24h)}</b></div><div><small>24H QUOTE VOLUME</small><b>{chosen?money(chosen.quote_volume_24h):'—'}</b></div><div><small>TRADES (24H)</small><b>{chosen?.trade_count_24h?.toLocaleString()??'—'}</b></div></div><div className="oi-row"><span>Futures open-interest snapshot</span><b>{oi==null?(oiError||'Loading…'):n(oi,3)+' contracts'}</b></div><small className="disclaimer">Spot candles and futures open interest are separate datasets; OI is not a directional signal.</small></article>
-      <article className="panel"><div className="panel-head"><div><div className="eyebrow">MARKET LEADERSHIP</div><h2>Highest traded value</h2></div><span className="tag">24H</span></div><div className="leader-list">{topVolume.map((m,i)=><button key={m.symbol} className="leader-row" onClick={()=>setSelected(m.symbol)}><span className="rank">{String(i+1).padStart(2,'0')}</span><b>{m.base_asset}</b><span>{money(m.quote_volume_24h)}</span><Change value={m.price_change_pct_24h}/></button>)}</div></article>
-     </section>
-     <section className="two-col lists">
-      <article className="panel"><div className="panel-head"><div><div className="eyebrow">PRICE PERFORMANCE</div><h2>Top 24h gainers</h2></div><span className="tag">SPOT</span></div><MarketTable rows={overview?.top_gainers??[]}/></article>
-      <article className="panel"><div className="panel-head"><div><div className="eyebrow">PRICE PERFORMANCE</div><h2>Top 24h decliners</h2></div><span className="tag">SPOT</span></div><MarketTable rows={overview?.top_losers??[]}/></article>
-     </section>
-     <article className="panel market-panel"><div className="panel-head"><div><div className="eyebrow">MARKET UNIVERSE</div><h2>USDT spot pairs</h2></div><label className="search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search symbol…"/></label></div><div className="table-wrap"><table><thead><tr><th>ASSET</th><th>LAST PRICE</th><th>24H CHANGE</th><th>24H HIGH</th><th>24H LOW</th><th>QUOTE VOLUME</th><th>TRADES</th></tr></thead><tbody>{filtered.slice(0,30).map(m=><tr key={m.symbol} onClick={()=>setSelected(m.symbol)}><td><b>{m.base_asset}</b><small>{m.symbol}</small></td><td>{money(m.last_price)}</td><td><Change value={m.price_change_pct_24h}/></td><td>{money(m.high_24h)}</td><td>{money(m.low_24h)}</td><td>{money(m.quote_volume_24h)}</td><td>{m.trade_count_24h.toLocaleString()}</td></tr>)}</tbody></table></div><div className="table-foot">Showing {Math.min(filtered.length,30)} of {filtered.length} matching pairs · Select a row to inspect the asset above.</div></article>
-    </>}
-    {(tab==='OVERVIEW'||tab==='MACRO')&&<section className="panel macro-panel"><div className="panel-head"><div><div className="eyebrow">CROSS-ASSET REFERENCE</div><h2>Macro watch</h2></div><span className="tag">VENDOR DATA</span></div><div className="macro-grid">{['XAUUSD','USOIL','DXY'].map(k=>{const x=macro?.instruments?.[k];return <div className="macro-card" key={k}><div><span>{k}</span><i className={x?.status==='ok'?'ok-dot':'bad-dot'}/></div><strong>{x?.last==null?'Unavailable':n(x.last,x.last<10?3:2)}</strong><small>{x?.label??'Loading reference…'}</small><em>{x?.status==='ok'?'Latest 5m interval: '+pct(x.change_pct_latest_interval):x?.status??'Loading'}</em><footer>{x?.source??'Yahoo Finance chart'}</footer></div>})}</div><p className="macro-note">{macro?.note??'Gold and WTI are futures references; they may differ from broker spot/CFD quotes. DXY is an index reference.'}</p></section>}
-    {tab==='DATA'&&<section className="panel data-panel"><div className="eyebrow">SYSTEM TRANSPARENCY</div><h2>Feed status & limitations</h2><div className="data-line"><span><Wifi size={15}/> API health</span><b>{error?'DEGRADED':'CONNECTED'}</b></div><div className="data-line"><span><Database size={15}/> Crypto spot</span><b>Binance public 24h ticker</b></div><div className="data-line"><span><Activity size={15}/> Futures context</span><b>Binance USD-M funding / open interest</b></div><div className="data-line"><span><Globe2 size={15}/> Macro references</span><b>Yahoo Finance chart · GC=F / CL=F / DX-Y.NYB</b></div><div className="data-line"><span><Clock3 size={15}/> Last API update</span><b>{updated?new Date(updated).toLocaleString():'—'}</b></div><p className="macro-note">This is a read-only monitoring terminal. Public provider data can be delayed, rate-limited or unavailable. Gold/WTI futures are reference instruments, not a universal spot/CFD order book. No AI-generated buy/sell calls, orders or account connections.</p></section>}
-   </>}
-   <footer className="app-footer"><span><ShieldCheck size={14}/> READ-ONLY MARKET INTELLIGENCE</span><span><Radio size={14}/> {source}</span><span>Auto refresh: 30 seconds</span></footer>
-  </main>
- </div>
+async function get<T,>(path:string):Promise<T>{const r=await fetch(API+path,{cache:'no-store'});if(!r.ok)throw new Error('API '+r.status);return r.json();}
+function Delta({value}:{value:number|null|undefined}){return <span className={value==null?'muted':value>=0?'up':'down'}>{value==null?'—':<>{value>=0?<ArrowUpRight size={13}/>:<ArrowDownRight size={13}/>} {pct(value)}</>}</span>}
+function StatusDot({ok}:{ok:boolean}){return <i className={ok?'dot-live':'dot-warn'}/>}
+
+function ChartPanel({symbol,timeframe}:{symbol:string;timeframe:string}){
+  const host=useRef<HTMLDivElement>(null); const chart=useRef<IChartApi|null>(null);
+  const [candles,setCandles]=useState<Candle[]>([]); const [status,setStatus]=useState('Loading candles…');
+  useEffect(()=>{let alive=true;get<{candles:Candle[];source:string}>(`/api/v1/crypto/klines/${symbol}?interval=${timeframe}&market=spot&limit=240`)
+    .then(x=>{if(alive){setCandles(x.candles||[]);setStatus(x.source||'MEXC Spot candles')}})
+    .catch(()=>{if(alive){setCandles([]);setStatus('Candle feed unavailable')}});return()=>{alive=false}},[symbol,timeframe]);
+  useEffect(()=>{
+    if(!host.current||!candles.length)return;
+    const el=host.current;
+    const c=createChart(el,{width:el.clientWidth,height:310,layout:{background:{color:'#080e18'},textColor:'#8b9bb0'},
+      grid:{vertLines:{color:'#111d2b'},horzLines:{color:'#111d2b'}},rightPriceScale:{borderColor:'#26364a'},
+      timeScale:{borderColor:'#26364a',timeVisible:true,secondsVisible:false},crosshair:{vertLine:{color:'#42617e'},horzLine:{color:'#42617e'}}});
+    chart.current=c;
+    const series=c.addSeries(CandlestickSeries,{upColor:'#19d7a3',downColor:'#f05b78',borderVisible:false,
+      wickUpColor:'#19d7a3',wickDownColor:'#f05b78'});
+    series.setData(candles.filter(x=>x.open!=null&&x.high!=null&&x.low!=null&&x.close!=null).map(x=>({
+      time:Math.floor(x.time/1000) as UTCTimestamp,open:x.open,high:x.high,low:x.low,close:x.close
+    })));
+    c.timeScale().fitContent();
+    const observer=new ResizeObserver(entries=>{for(const e of entries)c.applyOptions({width:e.contentRect.width})});
+    observer.observe(el);
+    return()=>{observer.disconnect();c.remove();chart.current=null};
+  },[candles]);
+  return <div className="chart-box"><div className="chart-meta"><span><StatusDot ok={candles.length>0}/>{status}</span><span>{candles.length} bars</span></div><div ref={host} className="chart-host">{!candles.length&&<div className="chart-empty">{status}</div>}</div></div>;
 }
-function MarketTable({rows}:{rows:Market[]}){return <div className="compact-table">{rows.slice(0,8).map(m=><div className="compact-row" key={m.symbol}><b>{m.base_asset}</b><span>{money(m.last_price)}</span><Change value={m.price_change_pct_24h}/></div>)}</div>}
+
+function CoinModal({symbol,onClose}:{symbol:string;onClose:()=>void}){
+  const [timeframe,setTimeframe]=useState('5M'); const [detail,setDetail]=useState<Detail|null>(null); const [loading,setLoading]=useState(true); const [error,setError]=useState('');
+  const load=useCallback(async()=>{setLoading(true);setError('');try{const d=await get<Detail>(`/api/v1/crypto/detail/${symbol}?timeframe=${timeframe}`);setDetail(d)}catch(e){setError(e instanceof Error?e.message:'Detail unavailable')}finally{setLoading(false)}},[symbol,timeframe]);
+  useEffect(()=>{load()},[load]);
+  const book=detail?.spot_orderbook; const trades=detail?.trade_intelligence;
+  return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}>
+    <section className="coin-modal">
+      <header className="modal-head"><div><div className="eyebrow">ASSET INTELLIGENCE / MEXC SPOT</div><h2>{symbol.replace('USDT','')} <small>/ USDT</small></h2><span className="muted tiny">Read-only market analysis · updated {stamp(detail?.updated_at)}</span></div><button className="icon-btn" onClick={onClose}><X/></button></header>
+      <div className="timeframe-row">{['1M','5M','30M','1H','1D'].map(t=><button key={t} className={timeframe===t?'active':''} onClick={()=>setTimeframe(t)}>{t}</button>)}</div>
+      {error&&<div className="alert"><ShieldAlert size={16}/>{error}</div>}
+      {loading&&!detail?<div className="loading">Fetching live MEXC data…</div>:<>
+        <div className="detail-top"><div className="panel chart-panel"><div className="panel-title"><span>PRICE ACTION</span><span className="live-label"><StatusDot ok={!!detail?.candles?.candles?.length}/> MEXC DATA</span></div><ChartPanel symbol={symbol} timeframe={timeframe}/></div>
+        <div className="panel intel-panel"><div className="panel-title"><span>WHALE INTELLIGENCE</span><Waves size={16}/></div>
+          <div className="whale-state"><span>WHALE BUYING</span><b className={detail?.whale_buying==='DETECTED'?'up':'muted'}>{detail?.whale_buying||'INSUFFICIENT DATA'}</b></div>
+          <div className="whale-state"><span>WHALE SELLING</span><b className={detail?.whale_selling==='DETECTED'?'down':'muted'}>{detail?.whale_selling||'INSUFFICIENT DATA'}</b></div>
+          <div className="zone-note">{detail?.whale_zone_status||'NO WHALE BUYING ZONE IDENTIFIED'}</div>
+          <p className="tiny muted">{trades?.caveat||'Large trade classification is a sample-relative heuristic, not wallet attribution.'}</p>
+        </div></div>
+        <div className="detail-grid">
+          <div className="panel"><div className="panel-title">SPOT ORDER BOOK <span className="tiny muted">MEXC</span></div><div className="book-stats"><span>Bid / Ask ratio</span><b>{num(book?.bid_ask_ratio,3)}</b><span>Imbalance</span><b>{pct(book?.imbalance_pct)}</b><span>Spread</span><b>{money(book?.spread)}</b><span>Spread %</span><b>{pct(book?.spread_pct)}</b></div><div className="depth-lists"><div><b className="up">BIDS</b>{(book?.bids||[]).slice(0,6).map((x:any,i:number)=><span key={i}><i>{money(Number(x[0]))}</i><b>{num(Number(x[1]),4)}</b></span>)}</div><div><b className="down">ASKS</b>{(book?.asks||[]).slice(0,6).map((x:any,i:number)=><span key={i}><i>{money(Number(x[0]))}</i><b>{num(Number(x[1]),4)}</b></span>)}</div></div><p className="tiny muted">Resting liquidity can be cancelled; it is not executed buying.</p></div>
+          <div className="panel"><div className="panel-title">DERIVATIVES CONTEXT <span className="tiny muted">CONTRACT ONLY</span></div><div className="book-stats"><span>Open interest</span><b>{compact(detail?.market?.open_interest_contracts)}</b><span>OI change</span><b><Delta value={detail?.market?.oi_change_pct}/></b><span>Funding rate</span><b>{detail?.market?.funding_rate==null?'—':(detail.market.funding_rate*100).toFixed(4)+'%'}</b><span>Contract status</span><b>{detail?.market?.contract_market_available?'AVAILABLE':'UNAVAILABLE'}</b></div><p className="tiny muted">OI change requires a collected historical snapshot for the selected timeframe. Funding is the exchange-reported contract rate.</p></div>
+          <div className="panel"><div className="panel-title">LARGE TRADE SAMPLE <span className="tiny muted">SPOT</span></div><div className="book-stats"><span>Sample size</span><b>{trades?.sample_size??'—'}</b><span>Large trade threshold</span><b>{money(trades?.large_trade_threshold_notional)}</b><span>Large buy notional</span><b className="up">{money(trades?.large_buy_notional)}</b><span>Large sell notional</span><b className="down">{money(trades?.large_sell_notional)}</b></div><p className="tiny muted">Top 1% of sampled trade notionals, when sample size permits. No wallet identity inferred.</p></div>
+          <div className="panel"><div className="panel-title">SUPPLY & VALUATION</div><div className="book-stats"><span>Market cap</span><b>UNKNOWN</b><span>FDV</span><b>UNKNOWN</b><span>Token unlock</span><b>UNKNOWN</b></div><p className="tiny muted">{detail?.market_cap_status}. {detail?.token_unlock_status}.</p></div>
+        </div>
+      </>}
+    </section>
+  </div>;
+}
+
+function App(){
+  const [rows,setRows]=useState<Market[]>([]);const [timeframe,setTimeframe]=useState('5M');
+  const [loading,setLoading]=useState(true);const [refreshing,setRefreshing]=useState(false);const [error,setError]=useState('');
+  const [updated,setUpdated]=useState('');const [scanCount,setScanCount]=useState(0);const [enriched,setEnriched]=useState(0);
+  const [query,setQuery]=useState('');const [quick,setQuick]=useState('ALL');const [selected,setSelected]=useState('');
+  const [minChange,setMinChange]=useState('');const [maxChange,setMaxChange]=useState('');const [minRvol,setMinRvol]=useState('');const [oiFilter,setOiFilter]=useState('ANY');const [signalFilter,setSignalFilter]=useState('ANY');const [unlockFilter,setUnlockFilter]=useState('ANY');
+  const refresh=useCallback(async()=>{setRefreshing(true);try{const x=await get<any>(`/api/v1/crypto/markets?timeframe=${timeframe}`);setRows(x.data||[]);setScanCount(x.spot_pairs_scanned||0);setEnriched(x.candle_enriched_pairs||0);setUpdated(x.updated_at||'');setError('')}catch(e){setError(e instanceof Error?e.message:'MEXC API unavailable')}finally{setLoading(false);setRefreshing(false)}},[timeframe]);
+  useEffect(()=>{refresh();const t=setInterval(refresh,30000);return()=>clearInterval(t)},[refresh]);
+  const filtered=useMemo(()=>{let x=rows.filter(r=>r.symbol.toLowerCase().includes(query.toLowerCase())||r.base_asset?.toLowerCase().includes(query.toLowerCase()));
+    if(minChange!=='' )x=x.filter(r=>r.price_change_pct!=null&&r.price_change_pct>=Number(minChange));
+    if(maxChange!=='' )x=x.filter(r=>r.price_change_pct!=null&&r.price_change_pct<=Number(maxChange));
+    if(minRvol!=='' )x=x.filter(r=>r.relative_volume!=null&&r.relative_volume>=Number(minRvol));
+    if(oiFilter==='UP')x=x.filter(r=>r.oi_change_pct!=null&&r.oi_change_pct>0);if(oiFilter==='DOWN')x=x.filter(r=>r.oi_change_pct!=null&&r.oi_change_pct<0);
+    if(signalFilter!=='ANY')x=x.filter(r=>r.signal===signalFilter);if(unlockFilter!=='ANY')x=x.filter(r=>r.token_unlock===unlockFilter);
+    if(quick==='GAINERS')x=x.filter(r=>r.price_change_pct!=null).sort((a,b)=>(b.price_change_pct||0)-(a.price_change_pct||0));
+    if(quick==='LOSERS')x=x.filter(r=>r.price_change_pct!=null).sort((a,b)=>(a.price_change_pct||0)-(b.price_change_pct||0));
+    if(quick==='VOLUME')x=x.filter(r=>(r.volume_change_pct||0)>50);
+    if(quick==='RVOL')x=x.filter(r=>(r.relative_volume||0)>=2);
+    if(quick==='OI_UP')x=x.filter(r=>r.oi_change_pct!=null&&r.oi_change_pct>0);
+    if(quick==='OI_DOWN')x=x.filter(r=>r.oi_change_pct!=null&&r.oi_change_pct<0);
+    if(quick==='WHALE')x=x.filter(r=>r.whale_activity==='DETECTED');
+    if(quick==='BREAKOUT')x=x.filter(r=>r.relative_volume!=null&&r.relative_volume>=2&&r.price_change_pct!=null&&r.price_change_pct>0);
+    if(quick==='REVERSAL')x=x.filter(r=>r.relative_volume!=null&&r.relative_volume>=1.5&&r.price_change_pct!=null&&r.price_change_pct<0);
+    return x;
+  },[rows,query,minChange,maxChange,minRvol,oiFilter,signalFilter,unlockFilter,quick]);
+  const gainers=rows.filter(r=>(r.price_change_pct||0)>0).length;const losers=rows.filter(r=>(r.price_change_pct||0)<0).length;const breadthTotal=Math.max(1,gainers+losers);
+  const bullishWidth=Math.round(gainers/breadthTotal*100);const bearishWidth=100-bullishWidth;
+  return <div className="app-shell">
+    <header className="topbar"><a className="brand"><span className="brandmark">N</span><span><b>NORDVEX</b><small>SCREENER PRO <i>MARKET INTELLIGENCE</i></small></span></a><nav><span className="nav-active">SCREENER</span><span>MARKET MAP</span><span>INTELLIGENCE</span></nav><div className="top-right"><span><StatusDot ok={!error}/>{error?'PROVIDER ISSUE':'MEXC PUBLIC FEED'}</span><button className="icon-btn" onClick={refresh} disabled={refreshing}><RefreshCw size={15} className={refreshing?'spin':''}/></button></div></header>
+    <div className="ticker-strip"><span className="live-dot"/> MEXC / USDT UNIVERSE <b>{scanCount.toLocaleString()} PAIRS</b><span>·</span><span>TIMEFRAME <b>{timeframe}</b></span><span>·</span><span>LAST SNAPSHOT <b>{stamp(updated)}</b></span><span>·</span><span>READ ONLY / NO EXECUTION</span></div>
+    <main className="content">
+      <section className="page-heading"><div><div className="eyebrow">INSTITUTIONAL MARKET MONITOR / 01</div><h1>Live Crypto <em>Screener</em></h1><p>Real exchange data. Explainable metrics. Explicit data-quality states.</p></div><div className="feed-status"><StatusDot ok={!error}/><span>{error?'DATA DEGRADED':'FEED STATUS'}</span><small>{refreshing?'UPDATING':loading?'CONNECTING':'REST SNAPSHOT · 30S'}</small></div></section>
+      {error&&<div className="alert"><ShieldAlert size={16}/><span>MEXC feed error: {error}. Existing rows are retained and their timestamp remains visible.</span></div>}
+      <section className="metric-grid"><div className="metric"><label><Globe2/> SPOT USDT PAIRS</label><strong>{scanCount||'—'}</strong><small>Enabled MEXC Spot symbols</small></div><div className="metric"><label><Database/> CANDLE ENRICHED</label><strong>{enriched||'—'}</strong><small>Historical metrics available</small></div><div className="metric"><label><ArrowUpRight/> BULLISH BREADTH</label><strong className="up">{rows.length?bullishWidth+'%':'—'}</strong><small>{gainers} positive / {breadthTotal} directional pairs</small></div><div className="metric"><label><ArrowDownRight/> BEARISH BREADTH</label><strong className="down">{rows.length?bearishWidth+'%':'—'}</strong><small>{losers} negative / {breadthTotal} directional pairs</small></div></section>
+      <section className="panel breadth-panel"><div className="panel-title"><span>MARKET BREADTH / SPOT CANDLE DIRECTION</span><span className="tiny muted">NOT A WIN PROBABILITY</span></div><div className="breadth-bubbles"><div className="bubble-wrap bull-wrap"><div className="bubble bull-bubble" style={{width:Math.max(58,Math.min(150,58+gainers/Math.max(rows.length,1)*92)),height:Math.max(58,Math.min(150,58+gainers/Math.max(rows.length,1)*92))}}><b>{gainers}</b><small>BULLISH</small></div></div><div className="breadth-track"><div className="bull-track" style={{width:bullishWidth+'%'}}/><div className="bear-track" style={{width:bearishWidth+'%'}}/></div><div className="bubble-wrap bear-wrap"><div className="bubble bear-bubble" style={{width:Math.max(58,Math.min(150,58+losers/Math.max(rows.length,1)*92)),height:Math.max(58,Math.min(150,58+losers/Math.max(rows.length,1)*92))}}><b>{losers}</b><small>BEARISH</small></div></div></div><div className="breadth-foot"><span>Positive timeframe candles: {bullishWidth}%</span><span>Negative timeframe candles: {bearishWidth}%</span></div></section>
+      <section className="panel screener-panel">
+        <div className="panel-title"><div><span>MARKET SCANNER</span><small>{filtered.length.toLocaleString()} / {rows.length.toLocaleString()} assets</small></div><div className="timeframes">{['1M','5M','30M','1H','1D'].map(t=><button key={t} className={timeframe===t?'active':''} onClick={()=>setTimeframe(t)}>{t}</button>)}</div></div>
+        <div className="quick-filters">{[['ALL','All pairs'],['GAINERS','Top gainers'],['LOSERS','Top losers'],['VOLUME','Volume explosions'],['RVOL','Unusual RVOL'],['OI_UP','OI increasing'],['OI_DOWN','OI decreasing'],['WHALE','Whale activity'],['BREAKOUT','Breakout watch'],['REVERSAL','Reversal watch']].map(([id,label])=><button key={id} className={quick===id?'selected':''} onClick={()=>setQuick(id)}>{label}</button>)}</div>
+        <details className="advanced-filters"><summary><Filter size={14}/> ADVANCED FILTERS <ChevronDown size={13}/></summary><div className="filter-grid">
+          <label>Min price change %<input value={minChange} onChange={e=>setMinChange(e.target.value)} placeholder="—" type="number"/></label><label>Max price change %<input value={maxChange} onChange={e=>setMaxChange(e.target.value)} placeholder="—" type="number"/></label><label>Min relative volume<input value={minRvol} onChange={e=>setMinRvol(e.target.value)} placeholder="e.g. 2.0" type="number" step=".1"/></label>
+          <label>OI direction<select value={oiFilter} onChange={e=>setOiFilter(e.target.value)}><option value="ANY">Any / unavailable</option><option value="UP">Increasing</option><option value="DOWN">Decreasing</option></select></label><label>Signal<select value={signalFilter} onChange={e=>setSignalFilter(e.target.value)}><option value="ANY">Any</option><option value="BULLISH">Bullish</option><option value="BEARISH">Bearish</option><option value="NEUTRAL">Neutral</option></select></label><label>Token unlock<select value={unlockFilter} onChange={e=>setUnlockFilter(e.target.value)}><option value="ANY">Any</option><option value="YES">Yes</option><option value="NO">No</option><option value="UNKNOWN">Unknown</option></select></label>
+        </div></details>
+        <div className="table-tools"><div className="search-box"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search symbol…"/></div><span className="tiny muted">Click a row for full asset intelligence</span></div>
+        <div className="table-scroll"><table><thead><tr><th>ASSET</th><th>PRICE</th><th>PRICE Δ</th><th>VOLUME Δ</th><th>REL VOL</th><th>FUTURES OI</th><th>OI Δ</th><th>FUNDING</th><th>MCAP</th><th>UNLOCK</th><th>SIGNAL</th></tr></thead><tbody>
+          {filtered.slice(0,500).map(r=><tr key={r.symbol} onClick={()=>setSelected(r.symbol)}><td><b>{r.base_asset}</b><small>{r.symbol}</small></td><td>{money(r.price)}</td><td><Delta value={r.price_change_pct}/></td><td><Delta value={r.volume_change_pct}/></td><td>{r.relative_volume==null?'—':r.relative_volume.toFixed(2)+'x'}</td><td>{r.contract_market_available?compact(r.open_interest_contracts):'—'}</td><td><Delta value={r.oi_change_pct}/></td><td>{r.funding_rate==null?'—':(r.funding_rate*100).toFixed(4)+'%'}</td><td>{compact(r.market_cap_usd)}</td><td><span className="unknown-tag">{r.token_unlock||'UNKNOWN'}</span></td><td><span className="signal-tag">{r.signal||'NEUTRAL'}</span></td></tr>)}
+        </tbody></table>{loading&&!rows.length&&<div className="loading">Connecting to MEXC public market data…</div>}{!loading&&!filtered.length&&<div className="empty-state">No assets match the current filters.</div>}</div>
+        <div className="table-foot">Rows sorted by MEXC 24h quote volume when loaded. Candle metrics are only populated for the configured enriched universe ({enriched} pairs). Missing values are intentionally blank.</div>
+      </section>
+      <footer className="app-footer"><span><StatusDot ok={!error}/> MEXC PUBLIC MARKET DATA · READ ONLY</span><span>SNAPSHOT {stamp(updated)} · AUTO REFRESH 30S · API CACHE 15S</span><span>NO ORDER EXECUTION / NO PRIVATE KEYS</span></footer>
+    </main>
+    {selected&&<CoinModal symbol={selected} onClose={()=>setSelected('')}/>}
+  </div>;
+}
 export default App;
