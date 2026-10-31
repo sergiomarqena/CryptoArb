@@ -15,3 +15,68 @@ th[onclick]{cursor:pointer;user-select:none}th[onclick]:hover{color:#5de4ec;back
 .evidence-row{display:flex;justify-content:space-between;gap:12px;color:#7890a7;font:8px 'DM Mono';padding:6px 0}
 .whale-activity-note{margin-top:9px;padding:9px 10px;background:#111b28;border:1px solid #314356;border-radius:4px;color:#a9bacb;font:8px 'DM Mono';text-align:center;letter-spacing:.35px}
 @media(max-width:620px){.probability-bars{grid-template-columns:1fr;gap:10px}.probability-bars>div{grid-template-columns:1fr auto}.probability-bars i{grid-column:1/3}.evidence-row{flex-direction:column}}
+
+
+/* NORDVEX visual pass — vivid terminal, motion, and tighter mobile hierarchy */
+:root{color-scheme:dark;--nv-cyan:#31e8f2;--nv-lime:#b8ff4d;--nv-violet:#a78bfa;--nv-pink:#ff4f91;--nv-amber:#ffc857}
+body{background:radial-gradient(ellipse at 12% 5%,#102e32 0,transparent 32%),radial-gradient(ellipse at 88% 22%,#24163d 0,transparent 34%),#05070d}
+.app-shell{background-image:linear-gradient(rgba(49,232,242,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(49,232,242,.035) 1px,transparent 1px);background-size:34px 34px;animation:gridDrift 32s linear infinite}
+@keyframes gridDrift{to{background-position:34px 34px}}
+.topbar{border-bottom-color:#1c3b45;box-shadow:0 8px 30px #0008}
+.brandmark{border-color:var(--nv-cyan);color:var(--nv-cyan);box-shadow:0 0 12px #31e8f255,0 0 34px #31e8f222;animation:brandPulse 3.5s ease-in-out infinite}
+@keyframes brandPulse{50%{box-shadow:0 0 18px #31e8f288,0 0 42px #31e8f244}}
+.topbar nav .nav-active{color:var(--nv-cyan);border-color:var(--nv-cyan);text-shadow:0 0 14px #31e8f277}
+.eyebrow,.brand small i{color:var(--nv-cyan)}
+.page-heading h1 em{background:linear-gradient(90deg,var(--nv-cyan),var(--nv-lime),var(--nv-violet));background-size:180% auto;background-clip:text;-webkit-background-clip:text;color:transparent;animation:gradientFlow 5s ease infinite}
+@keyframes gradientFlow{50%{background-position:100% center}}
+.feed-status{border-color:#23505a;box-shadow:inset 0 0 22px #31e8f20b,0 0 22px #31e8f20a}
+.dot-live,.live-dot{background:var(--nv-lime);box-shadow:0 0 7px var(--nv-lime),0 0 17px #b8ff4d99;animation:livePulse 1.8s ease-in-out infinite}
+@keyframes livePulse{50%{opacity:.55;box-shadow:0 0 2px var(--nv-lime),0 0 7px #b8ff4d66}}
+.metric,.panel{border-color:#263f50;background:linear-gradient(145deg,rgba(12,26,35,.97),rgba(13,12,28,.97));box-shadow:0 10px 32px #0005,inset 0 1px #ffffff08;transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease}
+.metric{isolation:isolate}
+.metric:before{content:"";position:absolute;z-index:-1;inset:0;background:linear-gradient(115deg,transparent 20%,#31e8f20b 48%,transparent 72%);transform:translateX(-120%);animation:cardSweep 8s ease-in-out infinite}
+.metric:nth-child(2):before{animation-delay:1.5s}.metric:nth-child(3):before{animation-delay:3s}.metric:nth-child(4):before{animation-delay:4.5s}
+@keyframes cardSweep{0%,65%,100%{transform:translateX(-120%)}85%{transform:translateX(120%)}}
+.metric:hover,.panel:hover{transform:translateY(-2px);border-color:#347b83;box-shadow:0 14px 38px #0008,0 0 24px #31e8f214}
+.metric label svg{color:var(--nv-cyan);filter:drop-shadow(0 0 5px #31e8f255)}
+.metric strong{letter-spacing:-1px;text-shadow:0 0 18px #31e8f21c}
+.up{color:var(--nv-lime)!important}.down{color:var(--nv-pink)!important}
+.bull-bubble{background:radial-gradient(circle at 35% 25%,#226b51,#102b29 72%);border-color:var(--nv-lime);color:#c9ff70;box-shadow:0 0 20px #b8ff4d30,inset 0 0 22px #b8ff4d12;animation:bubbleGlow 3s ease-in-out infinite}
+.bear-bubble{background:radial-gradient(circle at 35% 25%,#792747,#321323 72%);border-color:var(--nv-pink);color:#ff8db6;box-shadow:0 0 20px #ff4f9130,inset 0 0 22px #ff4f9112;animation:bubbleGlow 3s ease-in-out infinite reverse}
+@keyframes bubbleGlow{50%{filter:brightness(1.22);box-shadow:0 0 34px currentColor}}
+.breadth-track{height:10px;background:#1d2935;box-shadow:0 0 14px #0008}
+.bull-track{background:linear-gradient(90deg,#5bbd31,var(--nv-lime));box-shadow:0 0 14px #b8ff4d55}
+.bear-track{background:linear-gradient(90deg,var(--nv-pink),#b72b72);box-shadow:0 0 14px #ff4f9155}
+.timeframes button.active,.quick-filters button.selected{border-color:var(--nv-cyan);background:linear-gradient(135deg,#0c3a40,#252044);color:#a8fbff;box-shadow:inset 0 0 16px #31e8f222,0 0 14px #31e8f21c}
+.timeframes button,.quick-filters button{transition:all .18s ease}
+.timeframes button:hover,.quick-filters button:hover{transform:translateY(-1px);border-color:var(--nv-lime);color:var(--nv-lime)}
+tbody tr:hover{background:linear-gradient(90deg,#12353a,#1b1830)}
+.signal-tag{border-color:#41616b;color:#a6f6ed}
+.search-box:focus-within{border-color:var(--nv-cyan);box-shadow:0 0 0 2px #31e8f21b}
+.loading{background:linear-gradient(90deg,transparent,#31e8f20c,transparent);background-size:200% 100%;animation:loadingSweep 2s linear infinite}
+@keyframes loadingSweep{to{background-position:-200% 0}}
+.icon-btn:hover{box-shadow:0 0 18px #31e8f233}
+.alert{background:#281625;border-color:#8b315c;color:#ffb4cf}
+@media(max-width:620px){
+ .topbar{gap:6px;padding:8px 11px}
+ .brandmark{width:39px;height:39px}
+ .brand b{font-size:13px;letter-spacing:2.4px}
+ .brand small{font-size:8px;letter-spacing:1.1px}
+ .top-right{gap:8px}
+ .top-right>span{letter-spacing:.4px}
+ .topbar nav{margin-top:2px}
+ .topbar nav span{font-size:8px;letter-spacing:1px}
+ .content{padding:14px 10px 18px}
+ .page-heading{align-items:flex-start;gap:9px}
+ .page-heading h1{font-size:23px}
+ .page-heading p{font-size:10px;max-width:225px}
+ .feed-status{min-width:105px;margin-top:3px}
+ .metric{min-height:104px;padding:12px 11px}
+ .metric strong{font-size:23px;margin:12px 0 5px}
+ .metric small{font-size:8px;line-height:1.65}
+ .metric label{font-size:8px;letter-spacing:.55px}
+ .breadth-panel{padding:13px 11px}
+ .panel-title{font-size:8px;letter-spacing:.75px}
+ .screener-panel>.panel-title{padding:15px 13px 11px}
+}
+@media(prefers-reduced-motion:reduce){.app-shell,.brandmark,.dot-live,.live-dot,.bull-bubble,.bear-bubble,.metric:before{animation:none!important}}
