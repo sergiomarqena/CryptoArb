@@ -9,7 +9,9 @@ type Market = {
   quote_volume_24h:number|null; base_volume_24h:number|null; high_24h:number|null; low_24h:number|null;
   open_interest_contracts:number|null; oi_change_pct:number|null; funding_rate:number|null;
   contract_market_available:boolean; market_cap_usd:number|null; fully_diluted_market_cap_usd:number|null;
-  token_unlock:'YES'|'NO'|'UNKNOWN'; whale_activity:string; signal:string; metric_status:string;
+  liquidity_sort_value:number|null; quote_volume_estimate_usd:number|null;
+  bullish_probability:number|null; bearish_probability:number|null; neutral_probability:number|null;
+  confidence_pct:number|null; token_unlock:'YES'|'NO'|'UNKNOWN'; whale_activity:string; signal:string; metric_status:string;
 };
 type Candle = {time:number;open:number;high:number;low:number;close:number;volume:number|null};
 type Detail = {symbol:string;market:Market|null;candles:{candles:Candle[];source:string}|null;
@@ -84,13 +86,23 @@ function App(){
   const [loading,setLoading]=useState(true);const [refreshing,setRefreshing]=useState(false);const [error,setError]=useState('');
   const [updated,setUpdated]=useState('');const [scanCount,setScanCount]=useState(0);const [enriched,setEnriched]=useState(0);
   const [query,setQuery]=useState('');const [quick,setQuick]=useState('ALL');const [selected,setSelected]=useState('');
-  const [minChange,setMinChange]=useState('');const [maxChange,setMaxChange]=useState('');const [minRvol,setMinRvol]=useState('');const [oiFilter,setOiFilter]=useState('ANY');const [signalFilter,setSignalFilter]=useState('ANY');const [unlockFilter,setUnlockFilter]=useState('ANY');
+  const [minChange,setMinChange]=useState('');const [maxChange,setMaxChange]=useState('');const [minVolume,setMinVolume]=useState('');const [maxVolume,setMaxVolume]=useState('');const [minRvol,setMinRvol]=useState('');
+  const [minFunding,setMinFunding]=useState('');const [maxFunding,setMaxFunding]=useState('');const [minMcap,setMinMcap]=useState('');const [maxMcap,setMaxMcap]=useState('');const [minLiquidity,setMinLiquidity]=useState('');
+  const [oiFilter,setOiFilter]=useState('ANY');const [signalFilter,setSignalFilter]=useState('ANY');const [unlockFilter,setUnlockFilter]=useState('ANY');
+  const [sortKey,setSortKey]=useState<keyof Market>('liquidity_sort_value');const [sortDirection,setSortDirection]=useState<'desc'|'asc'>('desc');
   const refresh=useCallback(async()=>{setRefreshing(true);try{const x=await get<any>(`/api/v1/crypto/markets?timeframe=${timeframe}`);setRows(x.data||[]);setScanCount(x.spot_pairs_scanned||0);setEnriched(x.candle_enriched_pairs||0);setUpdated(x.updated_at||'');setError('')}catch(e){setError(e instanceof Error?e.message:'MEXC API unavailable')}finally{setLoading(false);setRefreshing(false)}},[timeframe]);
   useEffect(()=>{refresh();const t=setInterval(refresh,30000);return()=>clearInterval(t)},[refresh]);
   const filtered=useMemo(()=>{let x=rows.filter(r=>r.symbol.toLowerCase().includes(query.toLowerCase())||r.base_asset?.toLowerCase().includes(query.toLowerCase()));
     if(minChange!=='' )x=x.filter(r=>r.price_change_pct!=null&&r.price_change_pct>=Number(minChange));
     if(maxChange!=='' )x=x.filter(r=>r.price_change_pct!=null&&r.price_change_pct<=Number(maxChange));
+    if(minVolume!=='' )x=x.filter(r=>r.volume_change_pct!=null&&r.volume_change_pct>=Number(minVolume));
+    if(maxVolume!=='' )x=x.filter(r=>r.volume_change_pct!=null&&r.volume_change_pct<=Number(maxVolume));
     if(minRvol!=='' )x=x.filter(r=>r.relative_volume!=null&&r.relative_volume>=Number(minRvol));
+    if(minFunding!=='' )x=x.filter(r=>r.funding_rate!=null&&r.funding_rate*100>=Number(minFunding));
+    if(maxFunding!=='' )x=x.filter(r=>r.funding_rate!=null&&r.funding_rate*100<=Number(maxFunding));
+    if(minMcap!=='' )x=x.filter(r=>r.market_cap_usd!=null&&r.market_cap_usd>=Number(minMcap));
+    if(maxMcap!=='' )x=x.filter(r=>r.market_cap_usd!=null&&r.market_cap_usd<=Number(maxMcap));
+    if(minLiquidity!=='' )x=x.filter(r=>r.liquidity_sort_value!=null&&r.liquidity_sort_value>=Number(minLiquidity));
     if(oiFilter==='UP')x=x.filter(r=>r.oi_change_pct!=null&&r.oi_change_pct>0);if(oiFilter==='DOWN')x=x.filter(r=>r.oi_change_pct!=null&&r.oi_change_pct<0);
     if(signalFilter!=='ANY')x=x.filter(r=>r.signal===signalFilter);if(unlockFilter!=='ANY')x=x.filter(r=>r.token_unlock===unlockFilter);
     if(quick==='GAINERS')x=x.filter(r=>r.price_change_pct!=null).sort((a,b)=>(b.price_change_pct||0)-(a.price_change_pct||0));
@@ -102,9 +114,11 @@ function App(){
     if(quick==='WHALE')x=x.filter(r=>r.whale_activity==='DETECTED');
     if(quick==='BREAKOUT')x=x.filter(r=>r.relative_volume!=null&&r.relative_volume>=2&&r.price_change_pct!=null&&r.price_change_pct>0);
     if(quick==='REVERSAL')x=x.filter(r=>r.relative_volume!=null&&r.relative_volume>=1.5&&r.price_change_pct!=null&&r.price_change_pct<0);
+    if(quick==='ALL')x.sort((a,b)=>{const av=a[sortKey] as any,bv=b[sortKey] as any;if(av==null)return 1;if(bv==null)return -1;const cmp=typeof av==='string'?av.localeCompare(bv):Number(av)-Number(bv);return sortDirection==='asc'?cmp:-cmp});
     return x;
-  },[rows,query,minChange,maxChange,minRvol,oiFilter,signalFilter,unlockFilter,quick]);
-  const gainers=rows.filter(r=>(r.price_change_pct||0)>0).length;const losers=rows.filter(r=>(r.price_change_pct||0)<0).length;const breadthTotal=Math.max(1,gainers+losers);
+  },[rows,query,minChange,maxChange,minVolume,maxVolume,minRvol,minFunding,maxFunding,minMcap,maxMcap,minLiquidity,oiFilter,signalFilter,unlockFilter,quick,sortKey,sortDirection]);
+  const gainers=rows.filter(r=>r.price_change_pct!=null&&r.price_change_pct>0).length;const losers=rows.filter(r=>r.price_change_pct!=null&&r.price_change_pct<0).length;const breadthTotal=Math.max(1,gainers+losers);
+  const sortBy=(key:keyof Market)=>{if(sortKey===key)setSortDirection(d=>d==='desc'?'asc':'desc');else{setSortKey(key);setSortDirection('desc')}};
   const bullishWidth=Math.round(gainers/breadthTotal*100);const bearishWidth=100-bullishWidth;
   return <div className="app-shell">
     <header className="topbar"><a className="brand"><span className="brandmark">N</span><span><b>NORDVEX</b><small>SCREENER PRO <i>MARKET INTELLIGENCE</i></small></span></a><nav><span className="nav-active">SCREENER</span><span>MARKET MAP</span><span>INTELLIGENCE</span></nav><div className="top-right"><span><StatusDot ok={!error}/>{error?'PROVIDER ISSUE':'MEXC PUBLIC FEED'}</span><button className="icon-btn" onClick={refresh} disabled={refreshing}><RefreshCw size={15} className={refreshing?'spin':''}/></button></div></header>
@@ -119,11 +133,11 @@ function App(){
         <div className="quick-filters">{[['ALL','All pairs'],['GAINERS','Top gainers'],['LOSERS','Top losers'],['VOLUME','Volume explosions'],['RVOL','Unusual RVOL'],['OI_UP','OI increasing'],['OI_DOWN','OI decreasing'],['WHALE','Whale activity'],['BREAKOUT','Breakout watch'],['REVERSAL','Reversal watch']].map(([id,label])=><button key={id} className={quick===id?'selected':''} onClick={()=>setQuick(id)}>{label}</button>)}</div>
         <details className="advanced-filters"><summary><Filter size={14}/> ADVANCED FILTERS <ChevronDown size={13}/></summary><div className="filter-grid">
           <label>Min price change %<input value={minChange} onChange={e=>setMinChange(e.target.value)} placeholder="—" type="number"/></label><label>Max price change %<input value={maxChange} onChange={e=>setMaxChange(e.target.value)} placeholder="—" type="number"/></label><label>Min relative volume<input value={minRvol} onChange={e=>setMinRvol(e.target.value)} placeholder="e.g. 2.0" type="number" step=".1"/></label>
-          <label>OI direction<select value={oiFilter} onChange={e=>setOiFilter(e.target.value)}><option value="ANY">Any / unavailable</option><option value="UP">Increasing</option><option value="DOWN">Decreasing</option></select></label><label>Signal<select value={signalFilter} onChange={e=>setSignalFilter(e.target.value)}><option value="ANY">Any</option><option value="BULLISH">Bullish</option><option value="BEARISH">Bearish</option><option value="NEUTRAL">Neutral</option></select></label><label>Token unlock<select value={unlockFilter} onChange={e=>setUnlockFilter(e.target.value)}><option value="ANY">Any</option><option value="YES">Yes</option><option value="NO">No</option><option value="UNKNOWN">Unknown</option></select></label>
+          <label>OI direction<select value={oiFilter} onChange={e=>setOiFilter(e.target.value)}><option value="ANY">Any / unavailable</option><option value="UP">Increasing</option><option value="DOWN">Decreasing</option></select></label><label>Signal<select value={signalFilter} onChange={e=>setSignalFilter(e.target.value)}><option value="ANY">Any</option><option value="BULLISH">Bullish</option><option value="BEARISH">Bearish</option><option value="NEUTRAL">Neutral</option><option value="UNAVAILABLE">Unavailable</option></select></label><label>Token unlock<select value={unlockFilter} onChange={e=>setUnlockFilter(e.target.value)}><option value="ANY">Any</option><option value="YES">Yes</option><option value="NO">No</option><option value="UNKNOWN">Unknown</option></select></label>
         </div></details>
         <div className="table-tools"><div className="search-box"><Search size={15}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search symbol…"/></div><span className="tiny muted">Click a row for full asset intelligence</span></div>
-        <div className="table-scroll"><table><thead><tr><th>ASSET</th><th>PRICE</th><th>PRICE Δ</th><th>VOLUME Δ</th><th>REL VOL</th><th>FUTURES OI</th><th>OI Δ</th><th>FUNDING</th><th>MCAP</th><th>UNLOCK</th><th>SIGNAL</th></tr></thead><tbody>
-          {filtered.slice(0,500).map(r=><tr key={r.symbol} onClick={()=>setSelected(r.symbol)}><td><b>{r.base_asset}</b><small>{r.symbol}</small></td><td>{money(r.price)}</td><td><Delta value={r.price_change_pct}/></td><td><Delta value={r.volume_change_pct}/></td><td>{r.relative_volume==null?'—':r.relative_volume.toFixed(2)+'x'}</td><td>{r.contract_market_available?compact(r.open_interest_contracts):'—'}</td><td><Delta value={r.oi_change_pct}/></td><td>{r.funding_rate==null?'—':(r.funding_rate*100).toFixed(4)+'%'}</td><td>{compact(r.market_cap_usd)}</td><td><span className="unknown-tag">{r.token_unlock||'UNKNOWN'}</span></td><td><span className="signal-tag">{r.signal||'NEUTRAL'}</span></td></tr>)}
+        <div className="table-scroll"><table><thead><tr><th>ASSET</th><th onClick={()=>sortBy('price')}>PRICE ↕</th><th onClick={()=>sortBy('price_change_pct')}>PRICE Δ ↕</th><th onClick={()=>sortBy('volume_change_pct')}>VOLUME Δ ↕</th><th onClick={()=>sortBy('relative_volume')}>REL VOL ↕</th><th onClick={()=>sortBy('open_interest_contracts')}>FUTURES OI ↕</th><th onClick={()=>sortBy('oi_change_pct')}>OI Δ ↕</th><th onClick={()=>sortBy('funding_rate')}>FUNDING ↕</th><th onClick={()=>sortBy('market_cap_usd')}>MCAP ↕</th><th onClick={()=>sortBy('token_unlock')}>UNLOCK ↕</th><th onClick={()=>sortBy('signal')}>SIGNAL ↕</th></tr></thead><tbody>
+          {filtered.slice(0,500).map(r=><tr key={r.symbol} onClick={()=>setSelected(r.symbol)}><td><b>{r.base_asset}</b><small>{r.symbol}</small></td><td>{money(r.price)}</td><td><Delta value={r.price_change_pct}/></td><td><Delta value={r.volume_change_pct}/></td><td>{r.relative_volume==null?'—':r.relative_volume.toFixed(2)+'x'}</td><td>{r.contract_market_available?compact(r.open_interest_contracts):'—'}</td><td><Delta value={r.oi_change_pct}/></td><td>{r.funding_rate==null?'—':(r.funding_rate*100).toFixed(4)+'%'}</td><td>{compact(r.market_cap_usd)}</td><td><span className="unknown-tag">{r.token_unlock||'UNKNOWN'}</span></td><td><span className="signal-tag">{r.signal||'UNAVAILABLE'}</span></td></tr>)}
         </tbody></table>{loading&&!rows.length&&<div className="loading">Connecting to MEXC public market data…</div>}{!loading&&!filtered.length&&<div className="empty-state">No assets match the current filters.</div>}</div>
         <div className="table-foot">Rows sorted by MEXC 24h quote volume when loaded. Candle metrics are only populated for the configured enriched universe ({enriched} pairs). Missing values are intentionally blank.</div>
       </section>
