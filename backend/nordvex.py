@@ -123,11 +123,31 @@ class MexcMarketData:
         if self.client is None:
             await self.start()
         assert self.client is not None
-        response = await self.client.get(url, params=params)
-        if response.status_code == 429:
-            raise RuntimeError("MEXC rate limit (HTTP 429)")
-        response.raise_for_status()
-        payload = response.json()
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = await self.client.get(url, params=params)
+                if response.status_code in (429, 500, 502, 503, 504):
+                    last_error = RuntimeError(
+                        f"MEXC upstream HTTP {response.status_code} at {url.split('?')[0]}"
+                    )
+                    if attempt < 2:
+                        await asyncio.sleep(0.8 * (attempt + 1))
+                        continue
+                    raise last_error
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.8 * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    f"MEXC connection failed at {url.split('?')[0]}: {str(exc)[:120]}"
+                ) from exc
+        else:
+            raise RuntimeError(str(last_error or "MEXC request failed"))
         if isinstance(payload, dict) and payload.get("success") is False:
             raise RuntimeError(f"MEXC provider error: {payload.get('message') or payload.get('code')}")
         return payload
@@ -305,7 +325,21 @@ class MexcMarketData:
         tf = timeframe.upper()
         if tf not in TIMEFRAMES:
             raise ValueError("Unsupported timeframe")
-        spot_rows, contracts = await asyncio.gather(self.spot_universe(), self.contract_universe())
+        spot_result, contract_result = await asyncio.gather(
+            self.spot_universe(), self.contract_universe(), return_exceptions=True
+        )
+        if isinstance(spot_result, Exception):
+            raise RuntimeError(f"Spot universe unavailable: {str(spot_result)[:180]}")
+        spot_rows, spot_cache_hit = spot_result
+        if isinstance(contract_result, Exception):
+            # Spot market data remains usable when the separate derivatives API is unavailable.
+            contracts = {}
+            contract_feed_status = "unavailable"
+            contract_feed_error = str(contract_result)[:180]
+        else:
+            contracts = contract_result
+            contract_feed_status = "ok"
+            contract_feed_error = None
         semaphore = self.semaphore
 
         async def enrich(row: dict, scan_whales: bool = False) -> dict:
@@ -388,6 +422,8 @@ class MexcMarketData:
             "candle_enriched_pairs": len(by_symbol),
             "timeframe": tf,
             "sources": ["MEXC Spot public API", "MEXC Contract public API"],
+            "contract_feed_status": contract_feed_status,
+            "contract_feed_error": contract_feed_error,
             "updated_at": now_iso(),
             "data_policy": "Unavailable values are null/UNKNOWN; spot and contract metrics remain separate.",
             "candle_scan_limit": CANDLE_UNIVERSE_LIMIT,
