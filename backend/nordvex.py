@@ -3,6 +3,7 @@
 No private keys, account endpoints, or order execution are used here.
 """
 import asyncio
+import math
 import os
 import time
 from datetime import datetime, timezone
@@ -39,6 +40,60 @@ def pct_change(current: float | None, previous: float | None) -> float | None:
     if current is None or previous in (None, 0):
         return None
     return (current / previous - 1.0) * 100.0
+
+def clamp(value: float, low: float = -1.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
+
+def score_market(row: dict) -> dict:
+    """Transparent, uncalibrated directional heuristic; not a win-rate estimate."""
+    momentum = row.get("price_change_pct")
+    rvol = row.get("relative_volume")
+    oi_change = row.get("oi_change_pct")
+    funding = row.get("funding_rate")
+    features: dict[str, float] = {}
+    if momentum is not None:
+        features["momentum"] = clamp(momentum / 1.5)
+    direction = 1.0 if (momentum or 0) >= 0 else -1.0
+    if rvol is not None:
+        features["relative_volume"] = clamp((rvol - 1.0) / 2.0) * direction
+    if oi_change is not None and momentum is not None:
+        features["open_interest"] = clamp(oi_change / 2.0) * direction
+    if funding is not None:
+        # Crowded positive funding is a modest contrarian input; scale is configurable.
+        features["funding"] = clamp(-(funding * 1000.0))
+    weights = {"momentum": 0.40, "relative_volume": 0.20, "open_interest": 0.25, "funding": 0.15}
+    available_weight = sum(weights[k] for k in features)
+    if available_weight <= 0:
+        return {
+            "signal": "NEUTRAL", "signal_status": "insufficient_data",
+            "bullish_probability": None, "bearish_probability": None, "neutral_probability": None,
+            "confidence_pct": None, "signal_strength": None,
+            "supporting_evidence": [], "conflicting_evidence": [],
+            "probability_note": "No directional estimate: insufficient timeframe data.",
+        }
+    raw = sum(features[k] * weights[k] for k in features) / available_weight
+    logits = [raw * 2.4, -raw * 2.4, 0.55]
+    expv = [math.exp(v - max(logits)) for v in logits]
+    total = sum(expv)
+    probabilities = [v / total * 100.0 for v in expv]
+    coverage = available_weight / sum(weights.values())
+    confidence = coverage * min(1.0, 0.15 + abs(raw) * 1.65) * 100.0
+    bull, bear, neutral = probabilities
+    signal = "BULLISH" if bull >= 48 and bull > bear + 8 and confidence >= 20 else (
+        "BEARISH" if bear >= 48 and bear > bull + 8 and confidence >= 20 else "NEUTRAL"
+    )
+    support = [k for k, v in features.items() if v > 0.12]
+    conflict = [k for k, v in features.items() if v < -0.12]
+    return {
+        "signal": signal, "signal_status": "uncalibrated_heuristic",
+        "bullish_probability": round(bull, 2), "bearish_probability": round(bear, 2),
+        "neutral_probability": round(neutral, 2), "confidence_pct": round(confidence, 1),
+        "signal_strength": round(abs(raw) * 100.0, 1),
+        "supporting_evidence": support, "conflicting_evidence": conflict,
+        "probability_note": "Uncalibrated heuristic distribution; not a calibrated probability or historical win rate.",
+        "signal_timestamp": now_iso(), "model_version": "nordvex-transparent-v0.1",
+        "feature_coverage_pct": round(coverage * 100.0, 1),
+    }
 
 class MexcMarketData:
     def __init__(self) -> None:
@@ -275,6 +330,7 @@ class MexcMarketData:
                     result.update({"price_change_pct": None, "volume_change_pct": None,
                                    "relative_volume": None, "metric_status": "unavailable",
                                    "candle_error": str(exc)[:140]})
+            result.update(score_market(result))
             return result
 
         # All enabled USDT spot pairs are listed. Candle-derived enrichments are
@@ -287,15 +343,21 @@ class MexcMarketData:
                 by_symbol[item["symbol"]] = item
         output = []
         for row in spot_rows:
-            output.append(by_symbol.get(row["symbol"], {
+            contract = contracts.get(row["symbol"])
+            fallback = {
                 **row, "price_change_pct": None, "volume_change_pct": None,
                 "relative_volume": None, "metric_status": "not_enriched_rate_limit_budget",
-                "open_interest_contracts": None, "oi_change_pct": None, "funding_rate": None,
-                "contract_market_available": row["symbol"] in contracts,
+                "open_interest_contracts": contract.get("open_interest_contracts") if contract else None,
+                "oi_change_pct": None, "funding_rate": contract.get("funding_rate") if contract else None,
+                "contract_market_available": bool(contract),
+                "contract_last_price": contract.get("contract_last_price") if contract else None,
+                "contract_change_24h_pct": contract.get("contract_change_24h_pct") if contract else None,
+                "contract_volume_24h": contract.get("contract_volume_24h") if contract else None,
                 "market_cap_usd": None, "fully_diluted_market_cap_usd": None,
                 "token_unlock": "UNKNOWN", "whale_activity": "INSUFFICIENT_DATA",
-                "signal": "NEUTRAL", "signal_status": "not_scored",
-            }))
+            }
+            fallback.update(score_market(fallback))
+            output.append(by_symbol.get(row["symbol"], fallback))
         return {
             "data": output,
             "count": len(output),
@@ -316,7 +378,8 @@ class MexcMarketData:
         elif market == "contract":
             contract_symbol = symbol.upper().replace("USDT", "_USDT")
             payload = await self.request(f"{CONTRACT}/depth/{contract_symbol}", {"limit": min(limit, 1000)})
-            bids, asks = payload.get("bids", []), payload.get("asks", [])
+            book = payload.get("data", payload) if isinstance(payload, dict) else {}
+            bids, asks = book.get("bids", []), book.get("asks", [])
             source = "MEXC Contract /api/v1/contract/depth"
         else:
             raise ValueError("market must be spot or contract")
