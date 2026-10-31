@@ -157,6 +157,20 @@ async def coin_detail(symbol: str, timeframe: str = "5M"):
         if whale is None:
             whale = {"whale_buying": "INSUFFICIENT_DATA", "whale_selling": "INSUFFICIENT_DATA",
                      "caveat": "Trade feed unavailable"}
+        price_delta = market_row.get("price_change_pct") if market_row else None
+        oi_delta = market_row.get("oi_change_pct") if market_row else None
+        if price_delta is None or oi_delta is None:
+            oi_interpretation = "INSUFFICIENT_DATA"
+        elif price_delta > 0 and oi_delta > 0:
+            oi_interpretation = "POSSIBLE_LONG_BUILDUP"
+        elif price_delta < 0 and oi_delta > 0:
+            oi_interpretation = "POSSIBLE_SHORT_BUILDUP"
+        elif price_delta < 0 and oi_delta < 0:
+            oi_interpretation = "POSSIBLE_LONG_UNWINDING"
+        elif price_delta > 0 and oi_delta < 0:
+            oi_interpretation = "POSSIBLE_SHORT_COVERING"
+        else:
+            oi_interpretation = "MIXED_OR_FLAT"
         return {
             "symbol": symbol,
             "market": market_row,
@@ -164,6 +178,8 @@ async def coin_detail(symbol: str, timeframe: str = "5M"):
             "spot_orderbook": data_or_none(spot_book),
             "contract_orderbook": data_or_none(contract_book),
             "trade_intelligence": whale,
+            "oi_interpretation": oi_interpretation,
+            "oi_interpretation_basis": "Calculated from same-timeframe Spot candle price change and locally sampled Contract OI change; interpretation only.",
             "whale_buying": whale.get("whale_buying", "INSUFFICIENT_DATA"),
             "whale_selling": whale.get("whale_selling", "INSUFFICIENT_DATA"),
             "whale_buying_zone": None,
