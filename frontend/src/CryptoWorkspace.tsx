@@ -70,9 +70,9 @@ export default function CryptoWorkspace({markets}:{markets:Market[]}){
  useEffect(()=>{try{
    const saved=localStorage.getItem('mrmp-ping-events');if(saved)setEvents(JSON.parse(saved));
    setPingEnabled(localStorage.getItem('mrmp-pings')==='true');
-   const count=Number(localStorage.getItem('mrmp-chart-count'));if([1,2,3,4,6,8,9,12].includes(count))setChartCount(count);
+   const count=Number(localStorage.getItem('mrmp-chart-count'));if([1,2,3,4,6,8,9,12].includes(count))setChartCount(count);const savedCharts=localStorage.getItem('mrmp-chart-symbols');if(savedCharts){const parsed=JSON.parse(savedCharts);if(Array.isArray(parsed)&&parsed.every(x=>typeof x==='string'))setChartSymbols(parsed);}
  }catch{}},[]);
- useEffect(()=>{try{localStorage.setItem('mrmp-ping-events',JSON.stringify(events.slice(0,250)));localStorage.setItem('mrmp-pings',String(pingEnabled));localStorage.setItem('mrmp-chart-count',String(chartCount));}catch{}},[events,pingEnabled,chartCount]);
+ useEffect(()=>{try{localStorage.setItem('mrmp-ping-events',JSON.stringify(events.slice(0,250)));localStorage.setItem('mrmp-pings',String(pingEnabled));localStorage.setItem('mrmp-chart-count',String(chartCount));localStorage.setItem('mrmp-chart-symbols',JSON.stringify(chartSymbols));}catch{}},[events,pingEnabled,chartCount,chartSymbols]);
 
  // Detect real MEXC universe additions/removals once a new snapshot is received.
  useEffect(()=>{
@@ -101,11 +101,10 @@ export default function CryptoWorkspace({markets}:{markets:Market[]}){
 
  // Activity scan: top N contracts by 24H turnover, each checked against its preceding 21 five-minute candles.
  useEffect(()=>{
-   if(view!=='SCREENER')return;
    let live=true;
    const load=async()=>{setActivityLoading(true);setActivityError('');try{const data=await fetchJson<ActivityResponse>('/api/v1/crypto/activity?limit='+universeSize);if(!live)return;setActivity(data.data||[]);}catch(e){if(live)setActivityError(e instanceof Error?e.message:'Activity provider unavailable');}finally{if(live)setActivityLoading(false);}};
    load();const timer=window.setInterval(load,30000);return()=>{live=false;clearInterval(timer);};
- },[view,universeSize]);
+ },[universeSize]);
 
  const activeAlerts=useMemo(()=>activity.filter(x=>x.activity_status==='ok'&&x.change_last_5m_pct!=null&&Math.abs(x.change_last_5m_pct)>=minMove&&x.volume_multiple_vs_previous_21_candles!=null&&x.volume_multiple_vs_previous_21_candles>=minVolumeMultiple),[activity,minMove,minVolumeMultiple]);
  useEffect(()=>{

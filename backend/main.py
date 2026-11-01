@@ -256,7 +256,7 @@ async def crypto_activity(limit: int = 100):
     async def load():
         tickers = (await crypto_markets())["data"]
         selected = tickers[:limit]
-        semaphore = asyncio.Semaphore(3)
+        semaphore = asyncio.Semaphore(10)
         async def one(market: dict):
             symbol, contract_symbol = market["symbol"], market["contract_symbol"]
             async with semaphore:
