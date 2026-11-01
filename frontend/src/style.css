@@ -80,3 +80,78 @@ tbody tr:hover{background:linear-gradient(90deg,#12353a,#1b1830)}
  .screener-panel>.panel-title{padding:15px 13px 11px}
 }
 @media(prefers-reduced-motion:reduce){.app-shell,.brandmark,.dot-live,.live-dot,.bull-bubble,.bear-bubble,.metric:before{animation:none!important}}
+
+
+/* NORDVEX readability + TradingView-inspired screener table */
+:root {
+  --nv-text: #e8f0f8;
+  --nv-muted: #9aadc1;
+  --nv-line: #26384a;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+body { color: var(--nv-text); }
+.app-shell { animation: none; }
+.metric:before { animation: none !important; opacity: .28; }
+.brandmark, .dot-live, .live-dot, .bull-bubble, .bear-bubble { animation: none !important; }
+.metric:hover, .panel:hover { transform: none; }
+.topbar { min-height: 70px; }
+.ticker-strip { color: #9aadc1; font-size: 10px; font-weight: 600; }
+.ticker-strip b { color: #e2edf8; font-weight: 800; }
+.page-heading h1 { font-weight: 800; letter-spacing: -.55px; }
+.page-heading p { color: #a6b8ca; font-size: 12px; }
+.eyebrow { font-size: 10px; font-weight: 800; letter-spacing: 1.5px; }
+.metric { min-height: 104px; padding: 16px 18px; }
+.metric label { color: #a7b8c9; font-size: 10px; font-weight: 700; letter-spacing: .7px; }
+.metric strong { font-size: 27px; font-weight: 800; letter-spacing: -.6px; }
+.metric small { color: #91a5ba; font-size: 10px; font-weight: 600; }
+.panel-title { color: #c0cede; font-size: 10px; font-weight: 800; letter-spacing: .85px; }
+.tiny, .table-foot { font-size: 10px; }
+.quick-filters button, .timeframes button { font-family: Inter, Manrope, sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .1px; padding: 8px 11px; }
+.advanced-filters { color: #b5c5d5; font-family: Inter, Manrope, sans-serif; font-size: 11px; font-weight: 700; }
+.filter-grid label { color: #a8bacb; font-size: 10px; font-weight: 700; }
+.filter-grid input, .filter-grid select { color: #e5eef8; font: 600 11px Inter, Manrope, sans-serif; padding: 9px 10px; }
+.search-box { min-height: 38px; }
+.search-box input { color: #edf5fc; font: 600 12px Inter, Manrope, sans-serif; width: 210px; }
+.search-box input::placeholder { color: #8297ad; }
+.table-tools { min-height: 54px; }
+.table-scroll { max-height: 68vh; overscroll-behavior: contain; scrollbar-color: #40576e #0a1420; scrollbar-width: thin; }
+table { min-width: 1240px; font-family: Inter, Manrope, sans-serif; font-size: 11px; font-variant-numeric: tabular-nums; }
+thead { background: #101d2b; }
+th { padding: 13px 12px; color: #a9bbce; font-size: 10px; font-weight: 800; letter-spacing: .45px; border-bottom: 1px solid #38516a; }
+td { padding: 13px 12px; color: #d5e0eb; font-size: 11px; font-weight: 650; border-bottom: 1px solid #233548; }
+td:first-child { min-width: 130px; }
+td:first-child b { color: #f0f5fb; font: 800 12px Inter, Manrope, sans-serif; letter-spacing: .15px; }
+td:first-child small { color: #91a6bb; font: 600 10px Inter, Manrope, sans-serif; margin-top: 4px; }
+tbody tr { height: 48px; }
+tbody tr:hover { background: #14283a; }
+tbody tr:focus-within { outline: 1px solid #36c9d8; outline-offset: -1px; }
+td .up, td .down { font-size: 11px; font-weight: 800; }
+.unknown-tag, .signal-tag { padding: 5px 8px; font: 700 9px Inter, Manrope, sans-serif; letter-spacing: .2px; }
+.table-foot { color: #91a6bb; font-weight: 600; line-height: 1.7; }
+.feed-status { font-family: Inter, Manrope, sans-serif; font-size: 10px; font-weight: 800; }
+.feed-status small { font-size: 9px; font-weight: 700; }
+.app-footer { color: #91a6bb; font-size: 9px; font-weight: 700; }
+.modal-head h2 { font-weight: 800; }
+.book-stats, .depth-lists span { font-family: Inter, Manrope, sans-serif; font-size: 11px; }
+.book-stats b { font-weight: 800; }
+.depth-lists span b { font-weight: 750; }
+.probability-bars span { font-size: 10px; font-weight: 800; }
+.probability-bars b { font-size: 13px; font-weight: 800; }
+.whale-state, .whale-state b { font-family: Inter, Manrope, sans-serif; font-size: 10px; font-weight: 800; }
+.whale-activity-note, .zone-note { font-family: Inter, Manrope, sans-serif; font-size: 10px; font-weight: 700; line-height: 1.6; }
+@media(max-width:950px) {
+  .table-scroll { max-height: 72vh; }
+}
+@media(max-width:620px) {
+  .ticker-strip { font-size: 9px; }
+  .metric label { font-size: 9px; }
+  .metric strong { font-size: 24px; }
+  .metric small { font-size: 9px; }
+  .table-tools { min-height: 0; }
+  .search-box input { width: 180px; }
+  table { min-width: 1180px; }
+  th { padding: 12px 10px; font-size: 9px; }
+  td { padding: 12px 10px; font-size: 10px; }
+}
