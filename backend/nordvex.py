@@ -166,29 +166,33 @@ class MexcMarketData:
 
     async def spot_universe(self) -> tuple[list[dict], bool]:
         async def load():
-            info, ticker_payload = await asyncio.gather(
-                self.request(f"{SPOT}/api/v3/exchangeInfo"),
+            # Keep the broad ticker feed independent from exchangeInfo: MEXC may
+            # rate-limit or change metadata responses while public tickers remain live.
+            ticker_result, info_result = await asyncio.gather(
                 self.request(f"{SPOT}/api/v3/ticker/24hr"),
+                self.request(f"{SPOT}/api/v3/exchangeInfo"),
+                return_exceptions=True,
             )
-            # MEXC has used more than one status representation across API docs
-            # and deployments. Normalize response containers and avoid treating
-            # a valid ticker universe as empty solely due to status enum drift.
-            symbols = info.get("symbols", []) if isinstance(info, dict) else []
-            if isinstance(symbols, dict):
-                symbols = [symbols]
-            if isinstance(ticker_payload, dict):
-                tickers = ticker_payload.get("data", [])
-                if not tickers and ticker_payload.get("symbol"):
-                    tickers = [ticker_payload]
-            else:
-                tickers = ticker_payload if isinstance(ticker_payload, list) else []
-            ticker_rows = [x for x in tickers if isinstance(x, dict) and x.get("symbol")]
-            ticker_map = {x.get("symbol"): x for x in ticker_rows}
-            symbol_rows = [x for x in symbols if isinstance(x, dict) and x.get("symbol")]
-            eligible = []
+
+            def rows_from(payload: Any, key: str | None = None) -> list[dict]:
+                if isinstance(payload, list):
+                    return [x for x in payload if isinstance(x, dict)]
+                if isinstance(payload, dict):
+                    if key and isinstance(payload.get(key), list):
+                        return [x for x in payload[key] if isinstance(x, dict)]
+                    if isinstance(payload.get("data"), list):
+                        return [x for x in payload["data"] if isinstance(x, dict)]
+                    if payload.get("symbol"):
+                        return [payload]
+                return []
+
+            info = info_result if isinstance(info_result, dict) else {}
+            symbols = rows_from(info, "symbols")
+            ticker_rows = rows_from(ticker_result, "data")
+            ticker_map = {str(x.get("symbol", "")).upper(): x for x in ticker_rows if x.get("symbol")}
 
             def make_row(symbol: str, ticker: dict, item: dict | None = None):
-                last = number(ticker.get("lastPrice"))
+                last = number(ticker.get("lastPrice", ticker.get("price")))
                 volume = number(ticker.get("volume"))
                 quote_volume = number(ticker.get("quoteVolume"))
                 quote_volume_estimate = (
@@ -225,34 +229,55 @@ class MexcMarketData:
                     "trade_count_24h": ticker.get("count"),
                     "spot_bid": number(ticker.get("bidPrice")),
                     "spot_ask": number(ticker.get("askPrice")),
-                    "spot_source": "MEXC Spot /api/v3/ticker/24hr",
+                    "spot_source": (
+                        "MEXC Spot /api/v3/ticker/24hr"
+                        if ticker.get("lastPrice") is not None
+                        else "MEXC Spot /api/v3/ticker/price"
+                    ),
                 }
 
-            for item in symbol_rows:
+            eligible = []
+            for item in symbols:
                 symbol = str(item.get("symbol") or "").upper()
                 if not symbol.endswith("USDT") or symbol not in ticker_map:
                     continue
                 if item.get("quoteAsset") not in (None, "USDT"):
                     continue
                 status = item.get("status")
-                # Known MEXC values include ENABLED and numeric/string 1 (online).
                 if status not in (None, "", "ENABLED", "1", 1, "TRADING"):
                     continue
                 if item.get("isSpotTradingAllowed") is False:
                     continue
                 eligible.append(make_row(symbol, ticker_map[symbol], item))
 
-            # If exchangeInfo's schema/status enum changes, use the live 24h
-            # ticker list as the public spot universe. Ticker symbols are actual
-            # exchange instruments; no synthetic or guessed prices are created.
+            # If exchangeInfo metadata is missing or has changed, use the actual
+            # public 24h ticker universe. This is still exchange-returned data.
             if not eligible:
                 for ticker in ticker_rows:
                     symbol = str(ticker.get("symbol") or "").upper()
-                    if not symbol.endswith("USDT"):
-                        continue
-                    if number(ticker.get("lastPrice")) is None:
-                        continue
-                    eligible.append(make_row(symbol, ticker))
+                    if symbol.endswith("USDT") and number(ticker.get("lastPrice")) is not None:
+                        eligible.append(make_row(symbol, ticker))
+
+            # Last-resort public endpoint: price ticker is lighter than the full
+            # 24h statistics endpoint and does not require an API key.
+            if not eligible:
+                price_result = await self.request(f"{SPOT}/api/v3/ticker/price")
+                price_rows = rows_from(price_result, "data")
+                for ticker in price_rows:
+                    symbol = str(ticker.get("symbol") or "").upper()
+                    if symbol.endswith("USDT") and number(ticker.get("price")) is not None:
+                        eligible.append(make_row(symbol, ticker))
+
+            if not eligible:
+                errors = []
+                if isinstance(ticker_result, Exception):
+                    errors.append(f"ticker/24hr: {str(ticker_result)[:120]}")
+                if isinstance(info_result, Exception):
+                    errors.append(f"exchangeInfo: {str(info_result)[:120]}")
+                raise RuntimeError(
+                    "MEXC returned no usable USDT spot symbols"
+                    + (f" ({'; '.join(errors)})" if errors else "")
+                )
 
             eligible.sort(key=lambda x: x.get("liquidity_sort_value") or 0, reverse=True)
             return eligible
