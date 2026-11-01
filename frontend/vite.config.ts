@@ -8,3 +8,4 @@ export default defineConfig(({ mode }) => ({
     allowedHosts: ['nordvex-web-production.up.railway.app'],
   },
 }));
+// Railway preview host is explicitly allow-listed above.
