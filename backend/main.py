@@ -9,13 +9,11 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 APP_NAME = "MR MOST PROFITABLE Market Intelligence API"
-MEXC_SPOT = "https://api.mexc.com"
 MEXC_CONTRACT = "https://contract.mexc.com/api/v1/contract"
-BINANCE_FUTURES = "https://fapi.binance.com"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart"
 CACHE_TTL = int(os.getenv("MARKET_CACHE_TTL", "20"))
 UNIVERSE_LIMIT = int(os.getenv("UNIVERSE_LIMIT", "2500"))
-ACTIVITY_UNIVERSE = int(os.getenv("ACTIVITY_UNIVERSE", "100"))
+ACTIVITY_UNIVERSE = int(os.getenv("ACTIVITY_UNIVERSE", "25"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "9"))
 
 app = FastAPI(title=APP_NAME, version="1.0.0", description="Read-only public market monitoring API.")
@@ -251,7 +249,7 @@ async def klines(symbol: str, interval: str = "1m", limit: int = 100):
 
 
 @app.get("/api/v1/crypto/activity")
-async def crypto_activity(limit: int = 100):
+async def crypto_activity(limit: int = ACTIVITY_UNIVERSE):
     limit = max(10, min(limit, 200))
     async def load():
         tickers = (await crypto_markets())["data"]
@@ -397,9 +395,9 @@ async def one_symbol_indicators(symbol: str, semaphore: asyncio.Semaphore) -> di
 async def screener_indicators(symbols: str):
     requested = list(dict.fromkeys(x.strip().upper() for x in symbols.split(",") if x.strip()))
     if not requested or len(requested) > 50:
-        raise HTTPException(status_code=400, detail="Provide between 1 and 50 comma-separated USDT spot symbols")
+        raise HTTPException(status_code=400, detail="Provide between 1 and 50 MEXC USDT perpetual contract symbols")
     if any(not symbol.endswith("USDT") or not symbol.replace("USDT", "").isalnum() for symbol in requested):
-        raise HTTPException(status_code=400, detail="Only valid USDT spot symbols are accepted")
+        raise HTTPException(status_code=400, detail="Only valid MEXC USDT perpetual symbols are accepted")
     semaphore = asyncio.Semaphore(8)
     rows = await asyncio.gather(*(one_symbol_indicators(symbol, semaphore) for symbol in requested))
     return {
